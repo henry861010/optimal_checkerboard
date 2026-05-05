@@ -20,13 +20,13 @@ def _example_faces():
     }
     face2 = {
         "type": "BOX",
-        "dim": [11, 5, 0, 20, 30, 0],
+        "dim": [11, 12, 0, 18, 18, 0],
     }
     face3 = {
         "type": "BOX",
-        "dim": [12, 20, 0, 20, 40, 0],
+        "dim": [9, 30, 0, 20, 40, 0],
     }
-    return [face1, face3]
+    return [face1, face2, face3]
 
 
 def _collect_points(value, points):
@@ -44,7 +44,7 @@ def _collect_points(value, points):
             _collect_points(item, points)
 
 
-def _face_bounds(faces):
+def _face_bounds(faces, offset=1):
     """Return xy bounds that cover all example faces."""
     points = []
     for face in faces:
@@ -63,7 +63,7 @@ def _face_bounds(faces):
 
     x_values = [float(point[0]) for point in points]
     y_values = [float(point[1]) for point in points]
-    return [min(x_values), min(y_values), max(x_values), max(y_values)]
+    return [min(x_values) - offset, min(y_values) - offset, max(x_values) + offset, max(y_values) + offset]
 
 
 def _format_z_value(z_value):
@@ -187,15 +187,23 @@ def main():
     )
     mesh2d = mesher.mesh_checkerboard_box(_face_bounds(faces))
 
+    print()
     print("Shared checkerboard x rails:", x_list)
     print("Shared checkerboard y rails:", y_list)
     print("Vertical rail groups:", len(group_lines_v))
     print("Horizontal rail groups:", len(group_lines_h))
-    print("2D nodes:", mesh2d.nodes.shape)
-    print("2D elements:", mesh2d.elements.shape)
-    print("2D element_internal:", mesh2d.element_internal.shape)
+    #print("2D nodes:", mesh2d.nodes.shape)
+    #print("2D elements:", mesh2d.elements.shape)
+    #print("2D element_internal:", mesh2d.element_internal.shape)
+    print()
 
     layers = []
+    layers.append(
+        {
+            "z": -1,
+            "element_internal": mesh2d.element_internal.copy(),
+        }
+    )
     for z_value in sorted(mesher.get_snap_rules()):
         mesher.apply_snap_rules_at_z(z_value)
         layers.append(
@@ -208,15 +216,6 @@ def main():
     output_path = os.path.join(os.path.dirname(__file__), "mesh_layers.png")
     if _plot_mesh_layers(layers, output_path):
         print("Mesh layer plot:", output_path)
-
-    x_coords = sorted(
-        set(
-            round(float(x_coord), 4)
-            for x_coord in mesh2d.element_internal[:, [2, 4, 6, 8]].ravel()
-        )
-    )
-    print("Final x coordinates:", x_coords)
-
 
 if __name__ == "__main__":
     main()
