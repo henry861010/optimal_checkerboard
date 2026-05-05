@@ -23,6 +23,28 @@ class TestBuildSharedRails(unittest.TestCase):
         self.assertEqual(result["x_list"], [1.25])
         self.assertEqual(len(result["snap_rules_by_z"][0.0]), 2)
 
+    def test_same_z_near_corner_vertical_lines_do_not_share_rail(self):
+        """Verify near endpoints stay on separate vertical rails."""
+        lines = [
+            [[10, 0, 0], [10, 10, 0]],
+            [[11, 12, 0], [11, 18, 0]],
+        ]
+
+        result = build_shared_rails(lines, merge_tol=2.2)
+
+        self.assertEqual(result["x_list"], [10.0, 11.0])
+
+    def test_same_z_near_corner_horizontal_lines_do_not_share_rail(self):
+        """Verify near endpoints stay on separate horizontal rails."""
+        lines = [
+            [[0, 10, 0], [10, 10, 0]],
+            [[11, 12, 0], [18, 12, 0]],
+        ]
+
+        result = build_shared_rails(lines, merge_tol=2.2)
+
+        self.assertEqual(result["y_list"], [10.0, 12.0])
+
     def test_same_z_overlapping_lines_do_not_share_rail(self):
         """Verify same-z overlapping lines are assigned separate rails."""
         lines = [

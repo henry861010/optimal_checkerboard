@@ -68,6 +68,9 @@ def _can_add_to_rail(rail, feature, merge_tol, eps, features_by_z):
         ):
             return False
 
+    if _has_near_endpoint_conflict(rail, feature, merge_tol, eps):
+        return False
+
     if _has_blocking_intermediate_feature(
         rail,
         feature,
@@ -79,6 +82,35 @@ def _can_add_to_rail(rail, feature, merge_tol, eps, features_by_z):
         return False
 
     return True
+
+
+def _has_near_endpoint_conflict(rail, feature, merge_tol, eps):
+    """Return whether near same-z endpoints should prevent rail sharing."""
+    for member in rail["members"]:
+        if member["z"] != feature["z"]:
+            continue
+        if abs(member["coord"] - feature["coord"]) <= eps:
+            continue
+
+        span_gap = _span_gap(
+            member["span_min"],
+            member["span_max"],
+            feature["span_min"],
+            feature["span_max"],
+        )
+        if eps < span_gap < merge_tol - eps:
+            return True
+
+    return False
+
+
+def _span_gap(a_min, a_max, b_min, b_max):
+    """Return the positive gap between disjoint spans, or zero otherwise."""
+    if a_max < b_min:
+        return b_min - a_max
+    if b_max < a_min:
+        return a_min - b_max
+    return 0.0
 
 
 def _has_blocking_intermediate_feature(
