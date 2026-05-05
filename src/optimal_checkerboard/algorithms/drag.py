@@ -1,7 +1,5 @@
 import numpy as np
 import time
-from utils.search_face import search_face_element
-from utils.equivalence import equivalence
 
 '''
     OBJECTIVE: 
@@ -23,6 +21,70 @@ ELEMENT_2D_NODE3_Y = 7
 ELEMENT_2D_NODE4_X = 8
 ELEMENT_2D_NODE4_Y = 9
 
+import numpy as np
+from matplotlib.path import Path
+
+def search_face_element(element_coordinates, type, dim, index=None, eps=0.0, returnMask=False):
+    """
+        Fast predicate on subset indices (index). 
+        Returns a boolean mask aligned to index (or to all rows if index is None).
+    """
+    rows = index if index is not None else np.arange(len(element_coordinates))
+
+    # gather 4 corners
+    cols = np.array([0, 2, 4, 6], dtype=int)
+    x4 = element_coordinates[np.ix_(rows, cols)]
+    cols = np.array([1, 3, 5, 7], dtype=int)
+    y4 = element_coordinates[np.ix_(rows, cols)]
+    
+    ### max/min of each element_coordinates
+    min_x = x4.min(axis=1)
+    max_x = x4.max(axis=1)
+    min_y = y4.min(axis=1)
+    max_y = y4.max(axis=1)
+
+    if type == "BOX":
+        bl_x, bl_y, tr_x, tr_y = dim
+        if eps:
+            bl_x -= eps
+            bl_y -= eps
+            tr_x += eps
+            tr_y += eps
+        res_mask = (min_x >= bl_x) & (max_x <= tr_x) & (min_y >= bl_y) & (max_y <= tr_y)
+
+    elif type == "CYLINDER":
+        cx, cy, r = dim
+        rr = r*r + 0.0
+        if eps:
+            rr = (r + eps) * (r + eps)
+        dist = (x4 - cx)**2 + (y4 - cy)**2
+        res_mask = np.all(dist <= rr, axis=1)
+    
+    elif type == "POLYGON":
+        radiu = -1e-12
+        path = Path(np.asarray(dim, float))
+        element_coordinates = element_coordinates[rows]
+        
+        node1_list = element_coordinates[:, [0, 1]]
+        mask1 = path.contains_points(node1_list, radius=radiu)
+
+        node2_list = element_coordinates[:, [2, 3]]
+        mask2 = path.contains_points(node2_list, radius=radiu)
+        
+        node3_list = element_coordinates[:, [4, 5]]
+        mask3 = path.contains_points(node3_list, radius=radiu)
+        
+        node4_list = element_coordinates[:, [6, 7]]
+        mask4 = path.contains_points(node4_list, radius=radiu)
+        res_mask = mask1 & mask2 & mask3 & mask4
+    else:
+        raise ValueError(f"Unsupported type: {type}")
+    
+    if returnMask:
+        return res_mask
+    else:
+        return np.flatnonzero(res_mask) 
+    
 class Engin25D:
     def __init__(self):
         ### component
@@ -40,27 +102,34 @@ class Engin25D:
         self.node_ids = np.empty((0), dtype=np.float32)
         
         ### process
-        self.element_internal = np.empty((0, ELEMENT_2D_LEN), dtype=np.float32)
-        self.element_2D_nodes = np.zeros((0, 4), dtype=np.int32)
+        self.element_2D = np.zeros((0, 4), dtype=np.int32)
+        self.element_2D_vol = np.empty((0), dtype=np.float32)
+        self.element_2D_com = np.empty((0), dtype=np.int32)
         
         self.node_2D = np.empty((0, 2), dtype=np.float32)
         self.node_2D_to_3D = np.zeros((0), dtype=np.int32)
         
     ### initial
     def set_2D(self, mesh2D:'Mesh2D'):
-        nodes, elements = mesh2D.get_byIndex()
+        if hasattr(mesh2D, "get_byIndex"):
+            nodes, elements = mesh2D.get_byIndex()
+        else:
+            nodes, elements = mesh2D.nodes, mesh2D.elements
+
+        nodes = np.asarray(nodes, dtype=np.float32)
+        elements = np.asarray(elements, dtype=np.int32)
+        if nodes.ndim != 2 or nodes.shape[1] < 2:
+            raise ValueError("mesh2D.nodes must have shape (n, 2+)") 
+        if elements.ndim != 2 or elements.shape[1] != 4:
+            raise ValueError("mesh2D.elements must have shape (m, 4)")
         
-        element_coords = nodes[elements][:,:,:2]
-        self.element_internal = np.empty((len(elements), ELEMENT_2D_LEN), dtype=np.float32)
-        self.element_internal[:,ELEMENT_2D_NODE1_X:ELEMENT_2D_NODE4_Y+1] = element_coords.reshape(element_coords.shape[0], 8)
-        self.element_internal[:,ELEMENT_2D_COMP_ID] = 0
-        
-        self.element_2D_nodes = elements
-        
+        self.element_2D = elements
+        self.element_2D_com = np.zeros(len(elements), dtype=np.int32)
+        self.element_2D_vol = np.empty(len(elements), dtype=np.float32)
         self.node_2D = nodes[:,:2]
         self.node_2D_to_3D = np.zeros(len(nodes), dtype=np.int32) - 1
         
-        self.cal_volumns()
+        self._cal_volumns()
         
     ### foundmental
     def _pre_allocate_nodes(self, size: int = 1):
@@ -85,18 +154,38 @@ class Engin25D:
             self.element_comps = np.concatenate([self.element_comps, np.empty(extra, dtype=np.int32)])
         
     ### core
-    def _search_faces(self, elements, ranges=None, holes=None, returnMask=False):
+    def _normalize_element_indices(self, element_indices=None):
+        if element_indices is None:
+            return np.arange(len(self.element_2D), dtype=np.int32)
+
+        element_indices = np.asarray(element_indices, dtype=np.int32)
+        if element_indices.ndim == 0:
+            element_indices = element_indices.reshape(1)
+        return element_indices
+
+    def _element_coordinates(self, element_indices=None):
+        element_indices = self._normalize_element_indices(element_indices)
+        if len(element_indices) == 0:
+            return np.empty((0, 8), dtype=self.node_2D.dtype)
+
+        corner_xy = self.node_2D[self.element_2D[element_indices]]
+        return corner_xy.reshape(len(element_indices), 8)
+
+    def _search_faces(self, element_indices=None, ranges=None, holes=None, returnMask=False):
         """
         Ranges-first progressive search using only index arrays (no big copies).
-        Returns a index over 'elements'.
+        Returns local indices over 'element_indices'. If element_indices is
+        None, the returned indices are global 2D element indices.
         """
-        n = len(elements)
+        element_indices = self._normalize_element_indices(element_indices)
+        n = len(element_indices)
         if n == 0:
             if returnMask:
                 return np.zeros(0, dtype=bool)
             else:
                 return np.zeros(0, dtype=np.int32)
 
+        element_coordinates = self._element_coordinates(element_indices)
         included_mask = np.zeros(n, dtype=bool)
 
         ### Include
@@ -105,7 +194,7 @@ class Engin25D:
             for r in ranges:
                 if len(canidate_indices) == 0:
                     break
-                submask = search_face_element(elements[:,ELEMENT_2D_NODE1_X:], r["type"], r["dim"], index=canidate_indices, returnMask=True)
+                submask = search_face_element(element_coordinates, r["type"], r["dim"], index=canidate_indices, returnMask=True)
                 if np.any(submask):
                     hit_indices = canidate_indices[submask]
                     included_mask[hit_indices] = True
@@ -119,7 +208,7 @@ class Engin25D:
             for h in holes:
                 if len(live_indices) == 0:
                     break
-                submask = search_face_element(elements[:,ELEMENT_2D_NODE1_X:], h["type"], h["dim"], index=live_indices, returnMask=True)
+                submask = search_face_element(element_coordinates, h["type"], h["dim"], index=live_indices, returnMask=True)
                 if np.any(submask):
                     lose_indices = live_indices[submask]
                     included_mask[lose_indices] = False
@@ -129,31 +218,31 @@ class Engin25D:
         else:
             return np.flatnonzero(included_mask) 
         
-    def _assign_metal(self, elements, density, total_volume, isRandomSeed=False):
+    def _assign_metal(self, volumes, density, total_volume, isRandomSeed=False):
         """
-        Randomly pick elements (from 'elements' rows) until reaching density% of total_volume.
+        Randomly pick elements until reaching density% of total_volume.
         Operates by shuffling indices only and using cumsum to avoid Python loops.
-        Returns the remaining *row indices within this subset* (not global IDs).
+        Returns the chosen *row indices within this subset* (not global IDs).
         """
-        target_indices = np.arange(len(elements), dtype=np.int32)
+        volumes = np.asarray(volumes)
+        target_indices = np.arange(len(volumes), dtype=np.int32)
         
         # target volume
         target = (density / 100.0) * total_volume
-        vols = elements[:, ELEMENT_2D_VOLUMN]
 
         # random order of candidates (indices only, not rows)
         rng = np.random.default_rng(None if isRandomSeed else 1)
-        random_indices = target_indices[rng.permutation(len(elements))]
+        random_indices = target_indices[rng.permutation(len(volumes))]
 
         # cumulative sum until target
-        csum = np.cumsum(vols[random_indices])
+        csum = np.cumsum(volumes[random_indices])
         k = np.searchsorted(csum, target, side="right")  # number to take (may be 0)
         if k > 0:
             chosen_indices  = target_indices[random_indices[:k]]
             return chosen_indices
         else:
             # no assignment if density threshold is 0 or vols too small
-            return np.empty((0), dtype=np.int32), np.arange(len(elements))
+            return np.empty((0), dtype=np.int32)
 
     def _organize(self, areas):
         if isinstance(areas, dict):
@@ -163,23 +252,20 @@ class Engin25D:
             ### Select the area once (mask -> indices)
             ranges = [{"type": area["type"], "dim": area["dim"]}]
             holes  = area.get("holes")
-            area_indices  = self._search_faces(self.element_internal, ranges, holes)  # boolean over elements
+            area_indices  = self._search_faces(None, ranges, holes)
             if len(area_indices) == 0:
                 continue
 
             ### Working pool: local indices into area_idx
             remaining_indices = np.arange(len(area_indices), dtype=np.int32)
 
-            ### Convenience views for writes/reads via global IDs
-            area_comps = self.element_internal[area_indices, ELEMENT_2D_COMP_ID]
-
             ### Volumes for NORMAL metals (within area)
             for metal in area.get("metals", []):
                 if metal["type"] == "NORMAL":
                     ranges = metal.get("ranges")
                     holes = metal.get("holes")
-                    metal_indices = self._search_faces(self.element_internal[area_indices], ranges, holes)
-                    vol = self.element_internal[area_indices[metal_indices], ELEMENT_2D_VOLUMN].sum()
+                    metal_indices = self._search_faces(area_indices, ranges, holes)
+                    vol = self.element_2D_vol[area_indices[metal_indices]].sum()
                     metal["volumn"] = float(vol)
 
             ### metal assignment CONTINUE
@@ -188,13 +274,13 @@ class Engin25D:
                     ### find potential assignment area  
                     ranges = metal.get("ranges")
                     holes = metal.get("holes")
-                    region_local = self._search_faces(self.element_internal[area_indices][remaining_indices], ranges, holes)  # indices in pool
+                    region_local = self._search_faces(area_indices[remaining_indices], ranges, holes)
                     remaining_target_indices = remaining_indices[region_local]
                 
                     ### remove the assignment
                     if len(remaining_target_indices):
                         comp_id = self.comps[metal["material"]]
-                        assigned_mask = (area_comps[remaining_target_indices] == comp_id)
+                        assigned_mask = (self.element_2D_com[area_indices[remaining_target_indices]] == comp_id)
                         if np.any(assigned_mask):
                             remaining_assigned_indices = remaining_target_indices[assigned_mask]
                             remaining_indices = np.setdiff1d(remaining_indices, remaining_assigned_indices, assume_unique=False)
@@ -205,7 +291,7 @@ class Engin25D:
                     ### find potential assignment area  
                     ranges = metal.get("ranges")
                     holes = metal.get("holes")
-                    region_local = self._search_faces(self.element_internal[area_indices][remaining_indices], ranges, holes)  # indices in pool
+                    region_local = self._search_faces(area_indices[remaining_indices], ranges, holes)
                     remaining_target_indices = remaining_indices[region_local]  
                                     
                     ### convert the assignment metal & remove the assignment
@@ -217,10 +303,10 @@ class Engin25D:
                         comp_id_old = self.comps[material_old] 
                         comp_id_new = self.comps[material_new]
                         
-                        assigned_mask = (area_comps[remaining_target_indices] == comp_id_old)
+                        assigned_mask = (self.element_2D_com[area_indices[remaining_target_indices]] == comp_id_old)
                         if np.any(assigned_mask):
                             remaining_assigned_indices = remaining_target_indices[assigned_mask]
-                            self.element_internal[area_indices[remaining_indices], ELEMENT_2D_COMP_ID] = comp_id_new
+                            self.element_2D_com[area_indices[remaining_assigned_indices]] = comp_id_new
                             remaining_indices = np.setdiff1d(remaining_indices, remaining_assigned_indices, assume_unique=False)
             
             ### metal assignment Normal
@@ -232,13 +318,14 @@ class Engin25D:
                     density = metal.get("density")
                     volumn = metal.get("volumn")
                     
-                    region_local = self._search_faces(self.element_internal[area_indices][remaining_indices], ranges, holes)  # indices in pool
+                    region_local = self._search_faces(area_indices[remaining_indices], ranges, holes)
                     remaining_target_indices = remaining_indices[region_local]  
                                                 
                     ### assign metal
                     if len(remaining_target_indices):
                         ### find the assignment area
-                        remaining_assigned_indices = self._assign_metal(self.element_internal[area_indices][remaining_target_indices], density, volumn)
+                        target_volumes = self.element_2D_vol[area_indices[remaining_target_indices]]
+                        remaining_assigned_indices = self._assign_metal(target_volumes, density, volumn)
                         assigned_indices  = remaining_target_indices[remaining_assigned_indices]
                         
                         ### assigne metal
@@ -248,7 +335,7 @@ class Engin25D:
                         comp_id = self.comps[material]
 
                         ### assign the metal
-                        self.element_internal[area_indices[assigned_indices], ELEMENT_2D_COMP_ID] = comp_id
+                        self.element_2D_com[area_indices[assigned_indices]] = comp_id
 
                         ### remove assigned element
                         temp_mask = ~np.isin(remaining_indices, assigned_indices) 
@@ -260,10 +347,10 @@ class Engin25D:
                 if material not in self.comps:
                     self.comps[material] = len(self.comps)
                 comp_id = self.comps[material]
-                self.element_internal[area_indices[remaining_indices], ELEMENT_2D_COMP_ID] = comp_id
+                self.element_2D_com[area_indices[remaining_indices]] = comp_id
         
     def _organize_empty(self):
-        self.element_internal[:,ELEMENT_2D_COMP_ID] = 0
+        self.element_2D_com[:] = 0
         self.node_2D_to_3D[:] = -1
         
     def _drag(self, element_size: float, begin: float, end: float):
@@ -275,12 +362,12 @@ class Engin25D:
         element_size = distance / drag_num
 
         ### target element index
-        elem2D_idx = np.flatnonzero(self.element_internal[:, ELEMENT_2D_COMP_ID] != 0)
+        elem2D_idx = np.flatnonzero(self.element_2D_com != 0)
         if elem2D_idx.size == 0:
             return 0
 
         # unique 2D node ids used by those elements
-        elem2D_nodes = self.element_2D_nodes[elem2D_idx]
+        elem2D_nodes = self.element_2D[elem2D_idx]
         node2D_idx, inv = np.unique(elem2D_nodes, return_inverse=True)
         elem2D_nodes_local = inv.reshape(elem2D_nodes.shape)   
 
@@ -335,10 +422,11 @@ class Engin25D:
         self.elements[elem_start : elem_start + drag_num * E] = elems.astype(np.int32, copy=False)
         
         ### assign ids to each element
-        self.element_ids[elem_start : elem_start + drag_num * E] = 1 + np.max(self.element_ids) + np.arange(drag_num * E)
+        last_id = int(np.max(self.element_ids[:self.element_num])) if self.element_num else 0
+        self.element_ids[elem_start : elem_start + drag_num * E] = 1 + last_id + np.arange(drag_num * E)
 
         ### assign comps to each element
-        layer_comps = self.element_internal[elem2D_idx, ELEMENT_2D_COMP_ID]
+        layer_comps = self.element_2D_com[elem2D_idx]
         dest = self.element_comps[elem_start : elem_start + drag_num * E].reshape(drag_num, E)
         dest[:] = layer_comps
         
@@ -350,17 +438,19 @@ class Engin25D:
 
     def build(self, object_list):
         for obj in object_list:
-            self.organize_empty()
+            self._organize_empty()
             for index, layer in enumerate(obj[:-1]):
                 self._organize(layer["areas"])
                 self._drag(layer["element_size"], obj[index]["z"], obj[index+1]["z"])
                 
-    def cal_volumns(self):
+    def _cal_volumns(self):
+        corner_xy = self.node_2D[self.element_2D]
+
         # Extract coordinates as (N, 4) for each x and y
-        x1, y1 = self.element_internal[:, ELEMENT_2D_NODE1_X],  self.element_internal[:, ELEMENT_2D_NODE1_Y]
-        x2, y2 = self.element_internal[:, ELEMENT_2D_NODE2_X],  self.element_internal[:, ELEMENT_2D_NODE2_Y]
-        x3, y3 = self.element_internal[:, ELEMENT_2D_NODE3_X],  self.element_internal[:, ELEMENT_2D_NODE3_Y]
-        x4, y4 = self.element_internal[:, ELEMENT_2D_NODE4_X],  self.element_internal[:, ELEMENT_2D_NODE4_Y]
+        x1, y1 = corner_xy[:, 0, 0], corner_xy[:, 0, 1]
+        x2, y2 = corner_xy[:, 1, 0], corner_xy[:, 1, 1]
+        x3, y3 = corner_xy[:, 2, 0], corner_xy[:, 2, 1]
+        x4, y4 = corner_xy[:, 3, 0], corner_xy[:, 3, 1]
 
         # Shoelace formula for quadrilateral
         voulmn = 0.5 * np.abs(
@@ -368,5 +458,4 @@ class Engin25D:
             (y1*x2 + y2*x3 + y3*x4 + y4*x1)
         )
 
-        # Store back into column 13
-        self.element_internal[:, ELEMENT_2D_VOLUMN] = voulmn
+        self.element_2D_vol = voulmn.astype(np.float32, copy=False)
