@@ -78,12 +78,12 @@ def _edge_key(point_a, point_b, decimals=8):
     return tuple(sorted((start, end)))
 
 
-def _mesh_edge_segments(element_internal):
-    """Return unique line segments from internal quadrilateral coordinates."""
+def _mesh_edge_segments(nodes, elements):
+    """Return unique line segments from quadrilateral node connectivity."""
     segments = []
     seen_edges = set()
-    for element in element_internal:
-        points = element[2:10].reshape(4, 2)
+    for element in elements:
+        points = nodes[element, :2]
         for point_a, point_b in (
             (points[0], points[1]),
             (points[1], points[2]),
@@ -137,9 +137,10 @@ def _plot_mesh_layers(layers, output_path):
     axes = axes.ravel()
 
     for axis, layer in zip(axes, layers):
-        element_internal = layer["element_internal"]
-        segments = _mesh_edge_segments(element_internal)
-        points = element_internal[:, 2:10].reshape(-1, 2)
+        nodes = layer["nodes"]
+        elements = layer["elements"]
+        segments = _mesh_edge_segments(nodes, elements)
+        points = nodes[:, :2]
         axis.add_collection(
             LineCollection(segments, colors="#2f4f6f", linewidths=0.9)
         )
@@ -194,14 +195,14 @@ def main():
     print("Horizontal rail groups:", len(group_lines_h))
     #print("2D nodes:", mesh2d.nodes.shape)
     #print("2D elements:", mesh2d.elements.shape)
-    #print("2D element_internal:", mesh2d.element_internal.shape)
     print()
 
     layers = []
     layers.append(
         {
             "z": -1,
-            "element_internal": mesh2d.element_internal.copy(),
+            "nodes": mesh2d.nodes.copy(),
+            "elements": mesh2d.elements.copy(),
         }
     )
     for z_value in sorted(mesher.get_snap_rules()):
@@ -209,7 +210,8 @@ def main():
         layers.append(
             {
                 "z": z_value,
-                "element_internal": mesh2d.element_internal.copy(),
+                "nodes": mesh2d.nodes.copy(),
+                "elements": mesh2d.elements.copy(),
             }
         )
 

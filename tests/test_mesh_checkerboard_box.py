@@ -9,7 +9,7 @@ sys.path.insert(0, SRC_ROOT)
 
 import numpy as np
 
-from optimal_checkerboard import ELEMENT_2D_VOLUMN, OptimalMesh25D
+from optimal_checkerboard import OptimalMesh25D
 
 
 class TestMeshCheckerboardBox(unittest.TestCase):
@@ -30,23 +30,22 @@ class TestMeshCheckerboardBox(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "dim must be"):
             mesher.mesh_checkerboard_box([0, 0, 10])
 
-    def test_mesh_checkerboard_box_builds_element_internal(self):
-        """Verify generated meshes include the drag-time element table."""
+    def test_mesh_checkerboard_box_builds_nodes_and_elements(self):
+        """Verify generated meshes expose only node coordinates and elements."""
         faces = [{"type": "BOX", "dim": [0, 0, 0, 10, 10, 0]}]
 
         mesher = OptimalMesh25D()
         mesher.set_pattern(faces, element_size=10, ratio=0.1)
         mesh = mesher.mesh_checkerboard_box([0, 0, 10, 10])
 
-        self.assertEqual(mesh.element_internal.shape, (1, 10))
-        self.assertAlmostEqual(
-            float(mesh.element_internal[0, ELEMENT_2D_VOLUMN]),
-            100.0,
-        )
+        self.assertFalse(hasattr(mesh, "element_internal"))
+        self.assertEqual(mesh.nodes.shape, (4, 3))
+        self.assertEqual(mesh.elements.shape, (1, 4))
         np.testing.assert_allclose(
-            mesh.element_internal[0, 2:10],
+            mesh.nodes[mesh.elements[0], :2].reshape(8),
             np.asarray([0, 0, 10, 0, 10, 10, 0, 10], dtype=np.float32),
         )
+        self.assertIsNotNone(mesher.rail_node_index)
 
 
 if __name__ == "__main__":

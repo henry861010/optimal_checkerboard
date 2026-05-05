@@ -13,8 +13,8 @@ from optimal_checkerboard import Mesh2D, OptimalMesh25D
 
 
 class TestMeshAssignment(unittest.TestCase):
-    def test_mesh_assignment_converts_nodes_elements_to_element_internal(self):
-        """Verify assigned meshes are converted once at API boundary."""
+    def test_mesh_assignment_indexes_nodes_and_elements_directly(self):
+        """Verify assigned meshes keep public node/element arrays as source."""
         faces = [{"type": "BOX", "dim": [0, 0, 0, 10, 10, 0]}]
         mesh2d = Mesh2D(
             nodes=np.asarray(
@@ -34,28 +34,32 @@ class TestMeshAssignment(unittest.TestCase):
         assigned = mesher.mesh_assignment(mesh2d)
 
         self.assertIs(assigned, mesh2d)
-        self.assertEqual(assigned.element_internal.shape, (1, 10))
+        self.assertFalse(hasattr(assigned, "element_internal"))
+        np.testing.assert_array_equal(assigned.elements, mesh2d.elements)
+        np.testing.assert_allclose(assigned.nodes, mesh2d.nodes)
+        self.assertIsNotNone(mesher.rail_node_index)
         self.assertIsNotNone(mesher.rail_reference_index)
 
-    def test_mesh_assignment_preserves_existing_element_internal(self):
-        """Verify caller-provided internal tables are reused when valid."""
+    def test_mesh_assignment_rejects_out_of_bounds_element_ids(self):
+        """Verify element connectivity must reference existing nodes."""
         faces = [{"type": "BOX", "dim": [0, 0, 0, 10, 10, 0]}]
-        element_internal = np.asarray(
-            [[0, 100, 0, 0, 10, 0, 10, 10, 0, 10]],
-            dtype=np.float32,
-        )
         mesh2d = Mesh2D(
-            nodes=np.empty((0, 3), dtype=np.float32),
-            elements=np.empty((0, 4), dtype=np.int32),
-            element_internal=element_internal,
+            nodes=np.asarray(
+                [
+                    [0, 0, 0],
+                    [10, 0, 0],
+                    [10, 10, 0],
+                ],
+                dtype=np.float32,
+            ),
+            elements=np.asarray([[0, 1, 2, 3]], dtype=np.int32),
         )
 
         mesher = OptimalMesh25D()
         mesher.set_pattern(faces, element_size=10, ratio=0.1)
-        mesher.mesh_assignment(mesh2d)
 
-        self.assertIs(mesh2d.element_internal, element_internal)
-        np.testing.assert_allclose(mesh2d.element_internal, element_internal)
+        with self.assertRaisesRegex(ValueError, "outside mesh2d.nodes"):
+            mesher.mesh_assignment(mesh2d)
 
     def test_mesh_assignment_rejects_invalid_node_shape(self):
         """Verify assigned mesh nodes must be a 2D coordinate array."""

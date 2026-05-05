@@ -1258,7 +1258,7 @@ self.rails = {"x": x_rails, "y": y_rails}
 後續：
 
 - `x_list` / `y_list` 會成為 checkerboard mesh 必須包含的 grid line。
-- `rails` 會用來建立 rail reference index。
+- `rails` 會用來建立 rail node index。
 - `snap_rules_by_z` 會在 `apply_snap_rules_at_z(z)` 時查出該 z layer 要執行的座標修正。
 
 因此整個演算法的精神是：前處理時盡量把相近 pattern lines 合併成較少的 checkerboard rails，降低 mesh 複雜度；真正 drag 到特定 z layer 時，再用 snap rules 把局部節點移回真實幾何座標。
