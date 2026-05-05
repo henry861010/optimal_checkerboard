@@ -30,14 +30,15 @@ snap rule
     a shared rail back to a true pattern coordinate at one z event.  A rule
     stores axis, rail id, z, target coordinate, and the span to modify.
 
-rail node index
-    A sorted node lookup table built after 2D mesh creation.  It allows snap
-    rules to find nodes with binary search instead of scanning all 2D nodes.
+rail reference index
+    A sorted element-corner lookup table built after 2D mesh creation.  It
+    allows snap rules to find internal references with binary search instead
+    of scanning all 2D element coordinates.
 
 Workflow
 ========
 1. Create an :class:`OptimalMesh25D` instance.
-2. Call :meth:`OptimalMesh25D.set_pattern` with BOX or POLYGON faces.
+2. Call :meth:`OptimalMesh25D.set_pattern` with BOX, POLYGON, or LINE faces.
 3. Call :meth:`OptimalMesh25D.mesh_checkerboard_box` or
    :meth:`OptimalMesh25D.mesh_assignment`.
 4. During 3D drag, call :meth:`OptimalMesh25D.apply_snap_rules_at_z` whenever
@@ -64,6 +65,11 @@ use one or more closed orthogonal polylines:
 
     {"type": "POLYGON", "dim": [[[x, y, z], ...], ...]}
 
+LINE faces use one horizontal or vertical 3D segment on a single z plane, so
+``z1`` and ``z2`` must be equal:
+
+    {"type": "LINE", "dim": [[x1, y1, z1], [x2, y2, z2]]}
+
 Important Invariants
 ====================
 - Input feature edges must be horizontal or vertical in xy.
@@ -82,9 +88,10 @@ The intended scale is large extruded 3D meshes backed by a moderate 2D mesh.
 The expensive search work is pushed into preprocessing:
 
 - shared rails reduce the number of checkerboard grid lines;
-- ``rail_node_index`` stores rail nodes sorted by the span axis;
+- ``rail_reference_index`` stores element-corner references sorted by the span
+  axis;
 - snap execution is approximately
-  O(number_of_rules_at_z * log(nodes_on_rail) + touched_nodes).
+  O(number_of_rules_at_z * log(references_on_rail) + touched_references).
 
 Maintenance Notes
 =================
@@ -93,7 +100,7 @@ file should stay focused on orchestration, state ownership, and the public API.
 When changing rail compatibility rules, update ``rail_builder.py`` and the
 tests that cover same-z overlap, same-z non-overlap, and cross-z sharing.
 When changing mesh topology or node ordering, update
-``_build_rail_node_index`` and the snap-rule tests together.
+``_build_rail_reference_index`` and the snap-rule tests together.
 """
 
 from dataclasses import dataclass
@@ -104,18 +111,53 @@ from optimal_checkerboard.algorithms.feature_lines import _get_feature_lines
 from optimal_checkerboard.mesh import checkerboard_mesh_box
 
 
+ELEMENT_2D_COMP_ID = 0
+ELEMENT_2D_VOLUMN = 1
+ELEMENT_2D_VOLUME = ELEMENT_2D_VOLUMN
+ELEMENT_2D_NODE1_X = 2
+ELEMENT_2D_NODE1_Y = 3
+ELEMENT_2D_NODE2_X = 4
+ELEMENT_2D_NODE2_Y = 5
+ELEMENT_2D_NODE3_X = 6
+ELEMENT_2D_NODE3_Y = 7
+ELEMENT_2D_NODE4_X = 8
+ELEMENT_2D_NODE4_Y = 9
+
+ELEMENT_2D_X_COLUMNS = np.asarray(
+    [
+        ELEMENT_2D_NODE1_X,
+        ELEMENT_2D_NODE2_X,
+        ELEMENT_2D_NODE3_X,
+        ELEMENT_2D_NODE4_X,
+    ],
+    dtype=np.intp,
+)
+ELEMENT_2D_Y_COLUMNS = np.asarray(
+    [
+        ELEMENT_2D_NODE1_Y,
+        ELEMENT_2D_NODE2_Y,
+        ELEMENT_2D_NODE3_Y,
+        ELEMENT_2D_NODE4_Y,
+    ],
+    dtype=np.intp,
+)
+
+
 @dataclass
 class Mesh2D:
-    """Store 2D mesh nodes and quadrilateral element connectivity.
+    """Store public 2D mesh arrays and the drag-time internal element table.
 
     Attributes:
         nodes: ``(n_nodes, 3)`` array.  The z column is usually zero for the
             base 2D mesh and can be populated by client extrusion code.
         elements: ``(n_elements, 4)`` array of quadrilateral node ids.
+        element_internal: ``(n_elements, 10)`` drag-time table.  Columns are
+            component id, 2D area, and the four element corner xy coordinates.
     """
 
     nodes: np.ndarray = None
     elements: np.ndarray = None
+    element_internal: np.ndarray = None
 
 
 class OptimalMesh25D:
@@ -147,6 +189,7 @@ class OptimalMesh25D:
 
         self.rails = None
         self.snap_rules_by_z = None
+        self.rail_reference_index = None
         self.rail_node_index = None
 
         self.mesh2d = None
@@ -157,8 +200,8 @@ class OptimalMesh25D:
         """Extract shared rails and snap rules from pattern faces.
 
         Args:
-            faces: BOX or POLYGON face dictionaries.  See the module docstring
-                for accepted formats.
+            faces: BOX, POLYGON, or LINE face dictionaries.  See the module
+                docstring for accepted formats.
             element_size: Preferred checkerboard element size.  This value is
                 also used with ``ratio`` to derive the rail merge tolerance.
             ratio: Fraction of ``element_size`` used as the merge tolerance for
@@ -196,7 +239,8 @@ class OptimalMesh25D:
                 full domain.
 
         Returns:
-            A :class:`Mesh2D` instance containing nodes and elements.
+            A :class:`Mesh2D` instance containing nodes, elements, and
+            ``element_internal``.
         """
         self._check_pattern_ready()
 
@@ -208,8 +252,8 @@ class OptimalMesh25D:
         )
 
         self.mesh2d = Mesh2D(nodes=nodes, elements=elements)
-        self._build_pattern_node_lists()
-        self._build_rail_node_index()
+        self._build_element_internal()
+        self._build_rail_reference_index()
         return self.mesh2d
 
     def mesh_assignment(self, mesh2d):
@@ -228,8 +272,8 @@ class OptimalMesh25D:
         self.mesh2d = mesh2d
         self.mesh_x_list = np.asarray(self.x_list, dtype=np.float64)
         self.mesh_y_list = np.asarray(self.y_list, dtype=np.float64)
-        self._build_pattern_node_lists()
-        self._build_rail_node_index()
+        self._build_element_internal()
+        self._build_rail_reference_index()
         return self.mesh2d
 
     def get_snap_rules(self, z=None, eps=1e-6):
@@ -249,51 +293,58 @@ class OptimalMesh25D:
             return self.snap_rules_by_z
 
         z = float(z)
+        if z in self.snap_rules_by_z:
+            return self.snap_rules_by_z[z]
+
         for z_key, rules in self.snap_rules_by_z.items():
             if abs(float(z_key) - z) <= eps:
                 return rules
         return []
 
-    def apply_snap_rules_at_z(self, z, nodes=None, eps=1e-6):
-        """Move rail nodes to their true pattern coordinates at one z event.
+    def apply_snap_rules_at_z(self, z, element_internal=None, eps=1e-6):
+        """Move element corner references to true pattern coordinates.
 
         Args:
             z: Pattern z value whose snap rules should be applied.
-            nodes: Optional node array to mutate.  If omitted, mutates
-                ``self.mesh2d.nodes``.
+            element_internal: Optional ``(m, 10)`` internal table to mutate.
+                If omitted, mutates ``self.mesh2d.element_internal``.
             eps: Tolerance used for z matching and span selection.
 
         Returns:
-            Number of node references touched by all applied snap rules.
+            Number of element corner references touched by all applied rules.
 
         Notes:
-            This method intentionally mutates node coordinates in place.  The
-            caller can apply the rules once at a pattern z, then drag the
-            adjusted 2D mesh to the next z interval.
+            This method intentionally mutates element-corner coordinates in
+            place.  The caller can apply the rules once at a pattern z, then
+            drag the adjusted internal table to the next z interval.
         """
-        if self.rail_node_index is None:
+        if self.rail_reference_index is None:
             raise RuntimeError(
                 "Error: mesh_checkerboard_box or mesh_assignment is not "
                 "performed"
             )
 
-        if nodes is None:
-            nodes = self.mesh2d.nodes
+        if element_internal is None:
+            element_internal = self.mesh2d.element_internal
+
+        element_internal = np.asarray(element_internal)
+        if element_internal.ndim != 2 or element_internal.shape[1] != 10:
+            raise ValueError("element_internal must have shape (m, 10)")
 
         touched = 0
         for rule in self.get_snap_rules(z, eps=eps):
-            touched += self._apply_snap_rule(nodes, rule, eps=eps)
+            touched += self._apply_snap_rule(element_internal, rule, eps=eps)
         return touched
 
-    def _apply_snap_rule(self, nodes, rule, eps=1e-6):
-        """Apply a single snap rule to a sorted rail node span."""
+    def _apply_snap_rule(self, element_internal, rule, eps=1e-6):
+        """Apply one snap rule to a sorted element-corner reference span."""
         axis = rule["axis"]
         rail_id = rule["rail_id"]
-        axis_index = 0 if axis == "x" else 1
 
-        rail_index = self.rail_node_index[axis][rail_id]
+        rail_index = self.rail_reference_index[axis][rail_id]
         sorted_span_values = rail_index["span_values"]
-        sorted_node_ids = rail_index["node_ids"]
+        sorted_element_ids = rail_index["element_ids"]
+        sorted_coord_columns = rail_index["coord_columns"]
 
         lo = np.searchsorted(
             sorted_span_values,
@@ -305,10 +356,11 @@ class OptimalMesh25D:
             rule["span_max"] + eps,
             side="right",
         )
-        node_ids = sorted_node_ids[lo:hi]
+        element_ids = sorted_element_ids[lo:hi]
+        coord_columns = sorted_coord_columns[lo:hi]
 
-        nodes[node_ids, axis_index] = rule["target_coord"]
-        return int(len(node_ids))
+        element_internal[element_ids, coord_columns] = rule["target_coord"]
+        return int(len(element_ids))
 
     def _check_pattern_ready(self):
         """Raise an error if pattern preprocessing has not been completed."""
@@ -354,45 +406,104 @@ class OptimalMesh25D:
                 unique_values.append(value)
         return np.asarray(unique_values, dtype=np.float64)
 
-    def _build_pattern_node_lists(self, eps=1e-6):
-        """Build node lists located on each shared x and y rail."""
-        nodes = self.mesh2d.nodes
+    def _build_element_internal(self):
+        """Convert public nodes/elements into the drag-time internal table."""
+        element_internal = getattr(self.mesh2d, "element_internal", None)
+        if element_internal is not None:
+            element_internal = np.asarray(element_internal)
+            if element_internal.ndim != 2 or element_internal.shape[1] != 10:
+                raise ValueError(
+                    "mesh2d.element_internal must have shape (m, 10)"
+                )
+            self.mesh2d.element_internal = element_internal
+            return
 
-        self.x_pattern_nodes = []
-        for x_coord in self.x_list:
-            node_ids = np.where(np.isclose(nodes[:, 0], x_coord, atol=eps))[0]
-            self.x_pattern_nodes.append(node_ids)
+        nodes = np.asarray(self.mesh2d.nodes)
+        elements = np.asarray(self.mesh2d.elements, dtype=np.intp)
+        if nodes.ndim != 2 or nodes.shape[1] < 2:
+            raise ValueError("mesh2d.nodes must have shape (n, 3)")
+        if elements.ndim != 2 or elements.shape[1] != 4:
+            raise ValueError("mesh2d.elements must have shape (m, 4)")
 
-        self.y_pattern_nodes = []
-        for y_coord in self.y_list:
-            node_ids = np.where(np.isclose(nodes[:, 1], y_coord, atol=eps))[0]
-            self.y_pattern_nodes.append(node_ids)
+        corner_xy = nodes[elements, :2]
+        element_count = elements.shape[0]
+        element_internal = np.empty((element_count, 10), dtype=np.float32)
+        element_internal[:, ELEMENT_2D_COMP_ID] = 0.0
+        element_internal[:, ELEMENT_2D_VOLUMN] = _quad_area_xy(corner_xy)
+        element_internal[:, 2:10] = corner_xy.reshape(element_count, 8)
+        self.mesh2d.element_internal = element_internal
 
-    def _build_rail_node_index(self, eps=1e-6):
-        """Build sorted rail node indices for fast span-based snap queries."""
-        nodes = self.mesh2d.nodes
-        self.rail_node_index = {"x": [], "y": []}
+    def _build_rail_reference_index(self, eps=1e-6):
+        """Build sorted element-reference indices for snap span queries."""
+        element_internal = self.mesh2d.element_internal
+        self.rail_reference_index = {
+            "x": self._build_axis_reference_index(
+                element_internal,
+                self.rails["x"],
+                ELEMENT_2D_X_COLUMNS,
+                ELEMENT_2D_Y_COLUMNS,
+                eps,
+            ),
+            "y": self._build_axis_reference_index(
+                element_internal,
+                self.rails["y"],
+                ELEMENT_2D_Y_COLUMNS,
+                ELEMENT_2D_X_COLUMNS,
+                eps,
+            ),
+        }
+        self.rail_node_index = self.rail_reference_index
 
-        for rail in self.rails["x"]:
-            node_ids = np.where(
-                np.isclose(nodes[:, 0], rail["coord"], atol=eps)
-            )[0]
-            order = np.argsort(nodes[node_ids, 1])
-            self.rail_node_index["x"].append(
+    def _build_axis_reference_index(
+        self,
+        element_internal,
+        rails,
+        coord_columns,
+        span_columns,
+        eps,
+    ):
+        """Index all references on one axis with one global coordinate sort."""
+        coord_values = element_internal[:, coord_columns].ravel()
+        span_values = element_internal[:, span_columns].ravel()
+        coord_order = np.argsort(coord_values, kind="mergesort")
+        sorted_coord_values = coord_values[coord_order]
+
+        rail_indices = []
+        for rail in rails:
+            lo = np.searchsorted(
+                sorted_coord_values,
+                rail["coord"] - eps,
+                side="left",
+            )
+            hi = np.searchsorted(
+                sorted_coord_values,
+                rail["coord"] + eps,
+                side="right",
+            )
+
+            flat_refs = coord_order[lo:hi]
+            span_order = np.argsort(span_values[flat_refs], kind="mergesort")
+            flat_refs = flat_refs[span_order]
+
+            rail_indices.append(
                 {
-                    "node_ids": node_ids[order],
-                    "span_values": nodes[node_ids[order], 1],
+                    "element_ids": (flat_refs // 4).astype(np.intp),
+                    "coord_columns": coord_columns[flat_refs % 4],
+                    "span_values": span_values[flat_refs],
                 }
             )
 
-        for rail in self.rails["y"]:
-            node_ids = np.where(
-                np.isclose(nodes[:, 1], rail["coord"], atol=eps)
-            )[0]
-            order = np.argsort(nodes[node_ids, 0])
-            self.rail_node_index["y"].append(
-                {
-                    "node_ids": node_ids[order],
-                    "span_values": nodes[node_ids[order], 0],
-                }
-            )
+        return rail_indices
+
+
+def _quad_area_xy(corner_xy):
+    """Return vectorized absolute xy area for quadrilateral corner arrays."""
+    x_values = corner_xy[:, :, 0]
+    y_values = corner_xy[:, :, 1]
+    next_x_values = np.roll(x_values, -1, axis=1)
+    next_y_values = np.roll(y_values, -1, axis=1)
+    twice_area = np.sum(
+        x_values * next_y_values - y_values * next_x_values,
+        axis=1,
+    )
+    return 0.5 * np.abs(twice_area)

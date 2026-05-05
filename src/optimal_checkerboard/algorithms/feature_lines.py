@@ -4,10 +4,10 @@ from optimal_checkerboard.algorithms.rail_builder import build_shared_rails
 
 
 def _get_feature_lines(faces, element_size, return_details=False):
-    """Extract shared checkerboard rails from box and polygon face inputs.
+    """Extract shared checkerboard rails from supported face inputs.
 
     Args:
-        faces: Face dictionaries using either BOX or POLYGON geometry.
+        faces: Face dictionaries using BOX, POLYGON, or LINE geometry.
         element_size: Maximum coordinate gap used when merging nearby lines.
         return_details: Whether to include snap rules and rail metadata.
 
@@ -46,6 +46,8 @@ def _extract_lines(faces):
     for face in faces:
         if face["type"] == "BOX":
             lines.extend(_box_to_lines(face["dim"]))
+        elif face["type"] == "LINE":
+            lines.append(face["dim"])
         elif face["type"] == "POLYGON":
             for poly in face["dim"]:
                 for i, point in enumerate(poly):

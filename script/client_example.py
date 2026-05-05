@@ -26,7 +26,7 @@ def _example_faces():
         "type": "BOX",
         "dim": [12, 20, 0, 20, 40, 0],
     }
-    return [face1, face2, face3]
+    return [face1, face3]
 
 
 def _collect_points(value, points):
@@ -51,6 +51,8 @@ def _face_bounds(faces):
         if face["type"] == "BOX":
             x1, y1, _, x2, y2, _ = face["dim"]
             points.extend([(x1, y1, 0), (x2, y2, 0)])
+        elif face["type"] == "LINE":
+            points.extend(face["dim"])
         elif face["type"] == "POLYGON":
             _collect_points(face["dim"], points)
         else:
@@ -76,12 +78,12 @@ def _edge_key(point_a, point_b, decimals=8):
     return tuple(sorted((start, end)))
 
 
-def _mesh_edge_segments(nodes, elements):
-    """Return unique line segments for plotting quadrilateral mesh edges."""
+def _mesh_edge_segments(element_internal):
+    """Return unique line segments from internal quadrilateral coordinates."""
     segments = []
     seen_edges = set()
-    for element in elements:
-        points = nodes[element, :2]
+    for element in element_internal:
+        points = element[2:10].reshape(4, 2)
         for point_a, point_b in (
             (points[0], points[1]),
             (points[1], points[2]),
@@ -97,7 +99,7 @@ def _mesh_edge_segments(nodes, elements):
     return segments
 
 
-def _plot_mesh_layers(layers, elements, output_path):
+def _plot_mesh_layers(layers, output_path):
     """Save one figure that visualizes every snapped mesh layer."""
     try:
         mpl_cache_dir = os.path.join(
@@ -135,14 +137,15 @@ def _plot_mesh_layers(layers, elements, output_path):
     axes = axes.ravel()
 
     for axis, layer in zip(axes, layers):
-        nodes = layer["nodes"]
-        segments = _mesh_edge_segments(nodes, elements)
+        element_internal = layer["element_internal"]
+        segments = _mesh_edge_segments(element_internal)
+        points = element_internal[:, 2:10].reshape(-1, 2)
         axis.add_collection(
             LineCollection(segments, colors="#2f4f6f", linewidths=0.9)
         )
         axis.scatter(
-            nodes[:, 0],
-            nodes[:, 1],
+            points[:, 0],
+            points[:, 1],
             s=12,
             color="#d45d45",
             edgecolors="white",
@@ -190,25 +193,27 @@ def main():
     print("Horizontal rail groups:", len(group_lines_h))
     print("2D nodes:", mesh2d.nodes.shape)
     print("2D elements:", mesh2d.elements.shape)
+    print("2D element_internal:", mesh2d.element_internal.shape)
 
     layers = []
     for z_value in sorted(mesher.get_snap_rules()):
         mesher.apply_snap_rules_at_z(z_value)
-        layer_nodes = mesh2d.nodes.copy()
-        layer_nodes[:, 2] = float(z_value)
         layers.append(
             {
                 "z": z_value,
-                "nodes": layer_nodes
+                "element_internal": mesh2d.element_internal.copy(),
             }
         )
 
     output_path = os.path.join(os.path.dirname(__file__), "mesh_layers.png")
-    if _plot_mesh_layers(layers, mesh2d.elements, output_path):
+    if _plot_mesh_layers(layers, output_path):
         print("Mesh layer plot:", output_path)
 
     x_coords = sorted(
-        set(round(float(x_coord), 4) for x_coord in mesh2d.nodes[:, 0])
+        set(
+            round(float(x_coord), 4)
+            for x_coord in mesh2d.element_internal[:, [2, 4, 6, 8]].ravel()
+        )
     )
     print("Final x coordinates:", x_coords)
 
