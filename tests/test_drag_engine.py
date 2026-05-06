@@ -43,8 +43,8 @@ class TestDragEngine(unittest.TestCase):
 
         self.assertFalse(hasattr(engine, "element_internal"))
         np.testing.assert_array_equal(engine.element_2D, mesh.elements)
-        np.testing.assert_allclose(engine.element_2D_vol, [1.0, 1.0])
-        np.testing.assert_array_equal(engine.element_2D_com, [0, 0])
+        np.testing.assert_allclose(engine.element_2D_volumn, [1.0, 1.0])
+        np.testing.assert_array_equal(engine.element_2D_comp, [0, 0])
 
     def test_organize_and_drag_use_split_element_arrays(self):
         engine = Engin25D()
@@ -65,7 +65,7 @@ class TestDragEngine(unittest.TestCase):
         )
 
         core_id = engine.comps["CORE"]
-        np.testing.assert_array_equal(engine.element_2D_com, [core_id, 0])
+        np.testing.assert_array_equal(engine.element_2D_comp, [core_id, 0])
 
         engine._drag(element_size=0.5, begin=0.0, end=1.0)
 

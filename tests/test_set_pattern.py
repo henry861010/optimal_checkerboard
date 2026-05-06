@@ -44,6 +44,26 @@ class TestSetPattern(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Z coordinates mismatch"):
             mesher.set_pattern(faces, element_size=10, ratio=0.1)
 
+    def test_line_faces_accept_explicit_z_range(self):
+        """Verify 2D LINE faces can declare an active z interval."""
+        faces = [
+            {
+                "type": "LINE",
+                "dim": [[0, 0], [10, 0]],
+                "z_range": [5, 20],
+            }
+        ]
+
+        mesher = OptimalMesh25D()
+        _, _, _, y_list = mesher.set_pattern(
+            faces,
+            element_size=10,
+            ratio=0.1,
+        )
+
+        self.assertEqual(y_list, [0.0])
+        self.assertEqual(mesher.get_snap_rules(5)[0]["z_top"], 20)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -19,6 +19,8 @@ Key Concepts
 pattern line
     A vertical or horizontal edge extracted from input faces.  A vertical line
     has fixed x and varying y.  A horizontal line has fixed y and varying x.
+    Internally each line stores its xy projection plus the z interval where
+    that projected edge is active.
 
 shared rail
     A checkerboard grid line that may represent several nearby pattern lines.
@@ -27,8 +29,8 @@ shared rail
 
 snap rule
     A compact instruction that tells the drag workflow how to move nodes from
-    a shared rail back to a true pattern coordinate at one z event.  A rule
-    stores axis, rail id, z, target coordinate, and the span to modify.
+    a shared rail back to a true pattern coordinate at the feature bottom z.
+    A rule stores axis, rail id, z, target coordinate, and the span to modify.
 
 rail node index
     A sorted node lookup table built after 2D mesh creation.  It allows snap
@@ -70,14 +72,19 @@ LINE faces use one horizontal or vertical 3D segment on a single z plane, so
 
     {"type": "LINE", "dim": [[x1, y1, z1], [x2, y2, z2]]}
 
+Faces may also declare an active z interval with ``z_range`` or
+``z_bottom``/``z_top``.  In that case LINE endpoints may be 2D:
+
+    {"type": "LINE", "dim": [[x1, y1], [x2, y2]], "z_range": [z0, z1]}
+
 Important Invariants
 ====================
 - Input feature edges must be horizontal or vertical in xy.
-- Each input line must lie on exactly one z plane.
-- Same-z pattern lines that overlap or touch along their span cannot share a
-  rail if they would snap to different target coordinates.
-- Cross-z pattern lines may share a rail, because snap rules are applied only
-  at one z event at a time.
+- Legacy 3D input lines must lie on exactly one z plane.
+- Pattern lines whose active z intervals overlap cannot share a rail across
+  overlapping or touching xy spans if they would snap to different target
+  coordinates.
+- Pattern lines with disjoint active z intervals may share a rail.
 - The 2D mesh topology is expected to remain compatible with the rail ids
   after snapping.  Node coordinates may move, but the rail index still points
   to the same structural node ids.
@@ -379,7 +386,7 @@ class OptimalMesh25D:
         if nodes.ndim != 2 or nodes.shape[1] < 2:
             raise ValueError("mesh2d.nodes must have shape (n, 2+)")
         if not np.issubdtype(nodes.dtype, np.floating):
-            nodes = nodes.astype(np.float32)
+            nodes = nodes.astype(np.float64)
 
         if elements.ndim != 2 or elements.shape[1] != 4:
             raise ValueError("mesh2d.elements must have shape (m, 4)")

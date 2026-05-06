@@ -2,7 +2,10 @@
 
 from collections import defaultdict
 
-from optimal_checkerboard.algorithms.classify_line import _classify_line
+from optimal_checkerboard.algorithms.classify_line import (
+    _classify_line,
+    _line_components,
+)
 
 
 def _round_key(value, decimals=4):
@@ -10,9 +13,9 @@ def _round_key(value, decimals=4):
     return round(float(value), decimals)
 
 
-def _line_to_feature(line, axis, feature_id, z_decimals=4):
+def _line_to_feature(line, axis, feature_id, eps=0.01, z_decimals=4):
     """Convert one geometric line into a normalized feature dictionary."""
-    (x1, y1, z1), (x2, y2, z2) = line
+    x1, y1, x2, y2, z_bottom, z_top = _line_components(line, eps=eps)
 
     if axis == "x":
         coord = (x1 + x2) / 2.0
@@ -25,17 +28,21 @@ def _line_to_feature(line, axis, feature_id, z_decimals=4):
     else:
         raise ValueError("axis must be 'x' or 'y'")
 
-    z = _round_key((z1 + z2) / 2.0, z_decimals)
+    z_bottom = _round_key(z_bottom, z_decimals)
+    z_top = _round_key(z_top, z_decimals)
     return {
         "feature_id": feature_id,
         "axis": axis,
         "coord": float(coord),
-        "z": z,
+        "z": z_bottom,
+        "z_bottom": z_bottom,
+        "z_top": z_top,
         "span_min": float(span_min),
         "span_max": float(span_max),
         "line": [
-            [float(x1), float(y1), float(z1)],
-            [float(x2), float(y2), float(z2)],
+            [float(x1), float(y1)],
+            [float(x2), float(y2)],
+            [float(z_bottom), float(z_top)],
         ],
     }
 
@@ -45,26 +52,49 @@ def _spans_overlap_or_touch(a_min, a_max, b_min, b_max, eps):
     return max(a_min, b_min) <= min(a_max, b_max) + eps
 
 
-def _can_add_to_rail(rail, feature, merge_tol, eps, features_by_z):
+def _z_ranges_active_overlap(feature, other, eps):
+    """Return whether two features are active over the same z interval.
+
+    Positive-height ranges conflict only over positive overlap.  Zero-height
+    legacy features still conflict with another feature at the same snap event.
+    """
+    a_min = feature["z_bottom"]
+    a_max = feature["z_top"]
+    b_min = other["z_bottom"]
+    b_max = other["z_top"]
+    a_zero = abs(a_max - a_min) <= eps
+    b_zero = abs(b_max - b_min) <= eps
+
+    if a_zero and b_zero:
+        return abs(a_min - b_min) <= eps
+    if a_zero:
+        return b_min - eps <= a_min < b_max - eps
+    if b_zero:
+        return a_min - eps <= b_min < a_max - eps
+    return max(a_min, b_min) < min(a_max, b_max) - eps
+
+
+def _can_add_to_rail(rail, feature, merge_tol, eps, all_features):
     """Return whether a feature is compatible with an existing shared rail."""
     new_min = min(rail["min_coord"], feature["coord"])
     new_max = max(rail["max_coord"], feature["coord"])
     if new_max - new_min > merge_tol + eps:
         return False
 
-    # Same-z overlapping spans cannot share a rail if they snap to different
-    # target coordinates, because the same checkerboard node would have two
-    # destinations at the same drag event.
-    for span_min, span_max, coord in rail["spans_by_z"].get(feature["z"], []):
+    # Overlapping active z intervals cannot share one rail over the same span
+    # if they snap to different target coordinates.
+    for member in rail["members"]:
+        if not _z_ranges_active_overlap(member, feature, eps):
+            continue
         if (
             _spans_overlap_or_touch(
-                span_min,
-                span_max,
+                member["span_min"],
+                member["span_max"],
                 feature["span_min"],
                 feature["span_max"],
                 eps,
             )
-            and abs(coord - feature["coord"]) > eps
+            and abs(member["coord"] - feature["coord"]) > eps
         ):
             return False
 
@@ -76,7 +106,7 @@ def _can_add_to_rail(rail, feature, merge_tol, eps, features_by_z):
         feature,
         new_min,
         new_max,
-        features_by_z,
+        all_features,
         eps,
     ):
         return False
@@ -85,9 +115,9 @@ def _can_add_to_rail(rail, feature, merge_tol, eps, features_by_z):
 
 
 def _has_near_endpoint_conflict(rail, feature, merge_tol, eps):
-    """Return whether near same-z endpoints should prevent rail sharing."""
+    """Return whether near active endpoints should prevent rail sharing."""
     for member in rail["members"]:
-        if member["z"] != feature["z"]:
+        if not _z_ranges_active_overlap(member, feature, eps):
             continue
         if abs(member["coord"] - feature["coord"]) <= eps:
             continue
@@ -118,37 +148,35 @@ def _has_blocking_intermediate_feature(
     feature,
     new_min,
     new_max,
-    features_by_z,
+    all_features,
     eps,
 ):
-    """Return whether a same-z feature blocks a proposed rail merge.
+    """Return whether an active intermediate feature blocks a rail merge.
 
-    A same-z feature whose coordinate lies between the proposed rail bounds
-    acts as an ordering barrier if its span overlaps the new feature or an
-    existing rail member.  This prevents merging x=10 and x=12 through an
-    intervening conflicting x=11 feature.
+    A feature whose coordinate lies between the proposed rail bounds acts as
+    an ordering barrier when its active z range and span overlap the new
+    feature or an existing rail member.
     """
     member_ids = {member["feature_id"] for member in rail["members"]}
     candidate_ids = member_ids | {feature["feature_id"]}
-    same_z_features = features_by_z.get(feature["z"], [])
-    rail_same_z_members = [
-        member for member in rail["members"] if member["z"] == feature["z"]
-    ]
+    candidates = [feature] + rail["members"]
 
-    for other in same_z_features:
+    for other in all_features:
         if other["feature_id"] in candidate_ids:
             continue
         if not new_min + eps < other["coord"] < new_max - eps:
             continue
-        if _feature_overlaps_any(other, [feature] + rail_same_z_members, eps):
+        if _feature_overlaps_any(other, candidates, eps):
             return True
 
     return False
 
 
 def _feature_overlaps_any(feature, others, eps):
-    """Return whether a feature span overlaps any feature in a list."""
+    """Return whether a feature overlaps another in z and span."""
     for other in others:
+        if not _z_ranges_active_overlap(feature, other, eps):
+            continue
         if _spans_overlap_or_touch(
             feature["span_min"],
             feature["span_max"],
@@ -192,15 +220,16 @@ def _build_axis_rails(features, axis, merge_tol, eps):
     if not features:
         return [], []
 
-    features_by_z = defaultdict(list)
-    for feature in features:
-        features_by_z[feature["z"]].append(feature)
-
     rails = []
     active_start = 0
     sorted_features = sorted(
         features,
-        key=lambda item: (item["coord"], item["z"], item["span_min"]),
+        key=lambda item: (
+            item["coord"],
+            item["z_bottom"],
+            item["z_top"],
+            item["span_min"],
+        ),
     )
 
     for feature in sorted_features:
@@ -222,7 +251,7 @@ def _build_axis_rails(features, axis, merge_tol, eps):
                 feature,
                 merge_tol,
                 eps,
-                features_by_z,
+                features,
             ):
                 continue
 
@@ -297,6 +326,8 @@ def _rail_snap_rules(rail, rail_id):
                 "rail_coord": float(rail["coord"]),
                 "target_coord": float(feature["coord"]),
                 "z": feature["z"],
+                "z_bottom": feature["z_bottom"],
+                "z_top": feature["z_top"],
                 "span_min": float(feature["span_min"]),
                 "span_max": float(feature["span_max"]),
                 "feature_id": feature["feature_id"],
@@ -311,11 +342,23 @@ def build_shared_rails(lines, merge_tol, eps=0.01, z_decimals=4):
     vertical_lines, horizontal_lines = _classify_line(lines, eps=eps)
 
     vertical_features = [
-        _line_to_feature(line, "x", feature_id, z_decimals=z_decimals)
+        _line_to_feature(
+            line,
+            "x",
+            feature_id,
+            eps=eps,
+            z_decimals=z_decimals,
+        )
         for feature_id, line in enumerate(vertical_lines)
     ]
     horizontal_features = [
-        _line_to_feature(line, "y", feature_id, z_decimals=z_decimals)
+        _line_to_feature(
+            line,
+            "y",
+            feature_id,
+            eps=eps,
+            z_decimals=z_decimals,
+        )
         for feature_id, line in enumerate(horizontal_lines)
     ]
 

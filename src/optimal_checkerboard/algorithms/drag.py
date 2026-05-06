@@ -86,15 +86,15 @@ class Engin25D:
         
         ### nodes
         self.node_num = 0
-        self.nodes = np.empty((0, NODE_LEN), dtype=np.float32)
-        self.node_ids = np.empty((0), dtype=np.float32)
+        self.nodes = np.empty((0, NODE_LEN), dtype=np.float64)
+        self.node_ids = np.empty((0), dtype=np.float64)
         
         ### process
         self.element_2D = np.zeros((0, 4), dtype=np.int32)
-        self.element_2D_vol = np.empty((0), dtype=np.float32)
-        self.element_2D_com = np.empty((0), dtype=np.int32)
+        self.element_2D_volumn = np.empty((0), dtype=np.float64)
+        self.element_2D_comp = np.empty((0), dtype=np.int32)
         
-        self.node_2D = np.empty((0, 2), dtype=np.float32)
+        self.node_2D = np.empty((0, 2), dtype=np.float64)
         self.node_2D_to_3D = np.zeros((0), dtype=np.int32)
         
     ### initial
@@ -104,7 +104,7 @@ class Engin25D:
         else:
             nodes, elements = mesh2D.nodes, mesh2D.elements
 
-        nodes = np.asarray(nodes, dtype=np.float32)
+        nodes = np.asarray(nodes, dtype=np.float64)
         elements = np.asarray(elements, dtype=np.int32)
         if nodes.ndim != 2 or nodes.shape[1] < 2:
             raise ValueError("mesh2D.nodes must have shape (n, 2+)") 
@@ -112,8 +112,8 @@ class Engin25D:
             raise ValueError("mesh2D.elements must have shape (m, 4)")
         
         self.element_2D = elements
-        self.element_2D_com = np.zeros(len(elements), dtype=np.int32)
-        self.element_2D_vol = np.empty(len(elements), dtype=np.float32)
+        self.element_2D_comp = np.zeros(len(elements), dtype=np.int32)
+        self.element_2D_volumn = np.empty(len(elements), dtype=np.float64)
         self.node_2D = nodes[:,:2]
         self.node_2D_to_3D = np.zeros(len(nodes), dtype=np.int32) - 1
         
@@ -127,7 +127,7 @@ class Engin25D:
             new_capacity = max(required, int(current_capacity * 1.5))
             extra = new_capacity - current_capacity
             
-            self.nodes = np.vstack([self.nodes, np.empty((extra, 3), dtype=np.float32)])
+            self.nodes = np.vstack([self.nodes, np.empty((extra, 3), dtype=np.float64)])
             self.node_ids = np.concatenate([self.node_ids, np.empty(extra, dtype=np.int32)])
 
     def _pre_allocate_elements(self, size: int = 1):
@@ -206,12 +206,15 @@ class Engin25D:
         else:
             return np.flatnonzero(included_mask) 
         
-    def _assign_metal(self, volumes, density, total_volume, isRandomSeed=False):
+    def _assign_metal(self, volumes, density, total_volume, randomSeed=1):
         """
         Randomly pick elements until reaching density% of total_volume.
         Operates by shuffling indices only and using cumsum to avoid Python loops.
         Returns the chosen *row indices within this subset* (not global IDs).
         """
+        if density == 0:
+            return np.empty((0), dtype=np.int32)
+            
         volumes = np.asarray(volumes)
         target_indices = np.arange(len(volumes), dtype=np.int32)
         
@@ -219,20 +222,20 @@ class Engin25D:
         target = (density / 100.0) * total_volume
 
         # random order of candidates (indices only, not rows)
-        rng = np.random.default_rng(None if isRandomSeed else 1)
+        rng = np.random.default_rng(randomSeed)
         random_indices = target_indices[rng.permutation(len(volumes))]
 
         # cumulative sum until target
         csum = np.cumsum(volumes[random_indices])
         k = np.searchsorted(csum, target, side="right")  # number to take (may be 0)
         if k > 0:
-            chosen_indices  = target_indices[random_indices[:k]]
+            chosen_indices  = target_indices[random_indices[:k+1]]
             return chosen_indices
         else:
             # no assignment if density threshold is 0 or vols too small
             return np.empty((0), dtype=np.int32)
 
-    def _organize(self, areas):
+    def _organize(self, areas, layer=1):
         if isinstance(areas, dict):
             areas = [areas]
             
@@ -253,7 +256,7 @@ class Engin25D:
                     ranges = metal.get("ranges")
                     holes = metal.get("holes")
                     metal_indices = self._search_faces(area_indices, ranges, holes)
-                    vol = self.element_2D_vol[area_indices[metal_indices]].sum()
+                    vol = self.element_2D_volumn[area_indices[metal_indices]].sum()
                     metal["volumn"] = float(vol)
 
             ### metal assignment CONTINUE
@@ -266,9 +269,9 @@ class Engin25D:
                     remaining_target_indices = remaining_indices[region_local]
                 
                     ### remove the assignment
-                    if len(remaining_target_indices):
+                    if len(remaining_target_indices) and metal["material"] in self.comps:
                         comp_id = self.comps[metal["material"]]
-                        assigned_mask = (self.element_2D_com[area_indices[remaining_target_indices]] == comp_id)
+                        assigned_mask = (self.element_2D_comp[area_indices[remaining_target_indices]] == comp_id)
                         if np.any(assigned_mask):
                             remaining_assigned_indices = remaining_target_indices[assigned_mask]
                             remaining_indices = np.setdiff1d(remaining_indices, remaining_assigned_indices, assume_unique=False)
@@ -283,7 +286,7 @@ class Engin25D:
                     remaining_target_indices = remaining_indices[region_local]  
                                     
                     ### convert the assignment metal & remove the assignment
-                    if len(remaining_target_indices):
+                    if len(remaining_target_indices) and metal["material_o"] in self.comps:
                         material_old = metal["material_o"]
                         material_new = metal["material"]
                         if material_new not in self.comps: 
@@ -291,10 +294,10 @@ class Engin25D:
                         comp_id_old = self.comps[material_old] 
                         comp_id_new = self.comps[material_new]
                         
-                        assigned_mask = (self.element_2D_com[area_indices[remaining_target_indices]] == comp_id_old)
+                        assigned_mask = (self.element_2D_comp[area_indices[remaining_target_indices]] == comp_id_old)
                         if np.any(assigned_mask):
                             remaining_assigned_indices = remaining_target_indices[assigned_mask]
-                            self.element_2D_com[area_indices[remaining_assigned_indices]] = comp_id_new
+                            self.element_2D_comp[area_indices[remaining_assigned_indices]] = comp_id_new
                             remaining_indices = np.setdiff1d(remaining_indices, remaining_assigned_indices, assume_unique=False)
             
             ### metal assignment Normal
@@ -310,10 +313,10 @@ class Engin25D:
                     remaining_target_indices = remaining_indices[region_local]  
                                                 
                     ### assign metal
-                    if len(remaining_target_indices):
+                    if len(remaining_target_indices) and density > 0:
                         ### find the assignment area
-                        target_volumes = self.element_2D_vol[area_indices[remaining_target_indices]]
-                        remaining_assigned_indices = self._assign_metal(target_volumes, density, volumn)
+                        target_volumes = self.element_2D_volumn[area_indices[remaining_target_indices]]
+                        remaining_assigned_indices = self._assign_metal(target_volumes, density, volumn, randomSeed=layer)
                         assigned_indices  = remaining_target_indices[remaining_assigned_indices]
                         
                         ### assigne metal
@@ -323,7 +326,7 @@ class Engin25D:
                         comp_id = self.comps[material]
 
                         ### assign the metal
-                        self.element_2D_com[area_indices[assigned_indices]] = comp_id
+                        self.element_2D_comp[area_indices[assigned_indices]] = comp_id
 
                         ### remove assigned element
                         temp_mask = ~np.isin(remaining_indices, assigned_indices) 
@@ -335,10 +338,10 @@ class Engin25D:
                 if material not in self.comps:
                     self.comps[material] = len(self.comps)
                 comp_id = self.comps[material]
-                self.element_2D_com[area_indices[remaining_indices]] = comp_id
+                self.element_2D_comp[area_indices[remaining_indices]] = comp_id
         
     def _organize_empty(self):
-        self.element_2D_com[:] = 0
+        self.element_2D_comp[:] = 0
         self.node_2D_to_3D[:] = -1
         
     def _drag(self, element_size: float, begin: float, end: float):
@@ -346,11 +349,11 @@ class Engin25D:
         distance  = round(float(end) - float(begin), 5)
         if distance <= 0:
             return 0
-        drag_num = int(np.ceil(distance / element_size))
+        drag_num = int(max(1, np.floor(distance / element_size)))
         element_size = distance / drag_num
 
         ### target element index
-        elem2D_idx = np.flatnonzero(self.element_2D_com != 0)
+        elem2D_idx = np.flatnonzero(self.element_2D_comp != 0)
         if elem2D_idx.size == 0:
             return 0
 
@@ -414,7 +417,7 @@ class Engin25D:
         self.element_ids[elem_start : elem_start + drag_num * E] = 1 + last_id + np.arange(drag_num * E)
 
         ### assign comps to each element
-        layer_comps = self.element_2D_com[elem2D_idx]
+        layer_comps = self.element_2D_comp[elem2D_idx]
         dest = self.element_comps[elem_start : elem_start + drag_num * E].reshape(drag_num, E)
         dest[:] = layer_comps
         
@@ -425,10 +428,10 @@ class Engin25D:
         self.node_2D_to_3D[node2D_idx] = layer_nodes[-1]
 
     def build(self, object_list):
-        for obj in object_list:
+        for index, obj in enumerate(object_list):
             self._organize_empty()
             for index, layer in enumerate(obj[:-1]):
-                self._organize(layer["areas"])
+                self._organize(layer["areas"], index)
                 self._drag(layer["element_size"], obj[index]["z"], obj[index+1]["z"])
                 
     def _cal_volumns(self):
@@ -446,4 +449,4 @@ class Engin25D:
             (y1*x2 + y2*x3 + y3*x4 + y4*x1)
         )
 
-        self.element_2D_vol = voulmn.astype(np.float32, copy=False)
+        self.element_2D_volumn = voulmn.astype(np.float64, copy=False)

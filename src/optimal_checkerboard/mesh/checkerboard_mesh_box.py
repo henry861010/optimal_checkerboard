@@ -59,7 +59,7 @@ def _axis_nodes(axis_list, interval_element_counts):
 def _mesh_nodes(x_nodes, y_nodes):
     """Create flattened 3D node coordinates from x and y grid coordinates."""
     node_count = len(y_nodes) * len(x_nodes)
-    nodes = np.zeros((node_count, 3), dtype=np.float32)
+    nodes = np.zeros((node_count, 3), dtype=np.float64)
 
     x_grid, y_grid = np.meshgrid(x_nodes, y_nodes)
     nodes[:, 0] = x_grid.ravel()

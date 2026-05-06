@@ -101,6 +101,30 @@ class TestBuildSharedRails(unittest.TestCase):
         self.assertIn(0.0, result["snap_rules_by_z"])
         self.assertIn(10.0, result["snap_rules_by_z"])
 
+    def test_overlapping_z_ranges_prevent_span_conflicting_rail_sharing(self):
+        """Verify active z overlap prevents nested faces from sharing rails."""
+        lines = [
+            [[0, 0], [100, 0], [0, 100]],
+            [[10, 10], [90, 10], [10, 90]],
+        ]
+
+        result = build_shared_rails(lines, merge_tol=20.0)
+
+        self.assertEqual(result["y_list"], [0.0, 10.0])
+
+    def test_same_coord_overlapping_z_ranges_can_share_rail(self):
+        """Verify equal target coordinates can share through a z overlap."""
+        lines = [
+            [[0, 0], [100, 0], [0, 100]],
+            [[10, 0], [90, 0], [10, 90]],
+        ]
+
+        result = build_shared_rails(lines, merge_tol=20.0)
+
+        self.assertEqual(result["y_list"], [0.0])
+        self.assertIn(0.0, result["snap_rules_by_z"])
+        self.assertIn(10.0, result["snap_rules_by_z"])
+
 
 if __name__ == "__main__":
     unittest.main()

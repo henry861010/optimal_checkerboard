@@ -18,7 +18,7 @@ class Vision:
         self.comps = {}
         self.elements = np.empty((0, 8), dtype=np.int32)
         self.element_comps = np.empty((0), dtype=np.int32)
-        self.nodes = np.empty((0, 3), dtype=np.float32)
+        self.nodes = np.empty((0, 3), dtype=np.float64)
     
     def set(self, comps, elements, element_comps, nodes):
         self.elements = elements
@@ -80,7 +80,7 @@ class Mesh2D:
     def __init__(self):
         ### process
         self.elements = np.empty((0, ELEM_DIM), dtype=np.int32)
-        self.nodes = np.empty((0, NODE_DIM), dtype=np.float32)
+        self.nodes = np.empty((0, NODE_DIM), dtype=np.float64)
         
         ### others
         self.node_map = {}
@@ -98,7 +98,7 @@ class Mesh2D:
         if required > current_capacity:
             new_capacity = max(required, int(current_capacity * 1.5))
             extra = new_capacity - current_capacity
-            self.nodes = np.vstack([self.nodes, np.empty((extra, NODE_DIM), dtype=np.float32)])
+            self.nodes = np.vstack([self.nodes, np.empty((extra, NODE_DIM), dtype=np.float64)])
 
     def pre_allocate_elements(self, size: int = 1):
         '''
@@ -121,8 +121,8 @@ class Mesh2D:
         h = float(element_size)
 
         # --- normalize inputs ---
-        x_list = np.asarray(x_list, dtype=np.float32).ravel()
-        y_list = np.asarray(y_list, dtype=np.float32).ravel()
+        x_list = np.asarray(x_list, dtype=np.float64).ravel()
+        y_list = np.asarray(y_list, dtype=np.float64).ravel()
         if x_list.ndim != 1 or y_list.ndim != 1 or x_list.size < 2 or y_list.size < 2:
             raise ValueError("x_list and y_list must be 1D arrays with length >= 2.")
 
@@ -141,11 +141,11 @@ class Mesh2D:
                         out.append(a)
                     continue
                 nseg = max(1, int(np.ceil(length / h)))
-                seg = np.linspace(a, b, nseg + 1, endpoint=True, dtype=np.float32)
+                seg = np.linspace(a, b, nseg + 1, endpoint=True, dtype=np.float64)
                 if out:
                     seg = seg[1:]  # avoid boundary duplicate
                 out.extend(seg.tolist())
-            return np.asarray(out, dtype=np.float32)
+            return np.asarray(out, dtype=np.float64)
 
         x = densify(x_list)
         y = densify(y_list)
@@ -157,7 +157,7 @@ class Mesh2D:
         # --- nodes (x varies fastest) ---
         X, Y = np.meshgrid(x, y, indexing="xy")
         Z = np.zeros_like(X)
-        nodes = np.column_stack([X.ravel(), Y.ravel(), Z.ravel()]).astype(np.float32)  # (Ny*Nx, 2)
+        nodes = np.column_stack([X.ravel(), Y.ravel(), Z.ravel()]).astype(np.float64)  # (Ny*Nx, 2)
 
         # --- element node ids ---
         ix = np.arange(Nx - 1, dtype=np.int32)

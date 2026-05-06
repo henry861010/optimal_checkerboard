@@ -58,6 +58,18 @@ class TestClassifyLine(unittest.TestCase):
             [horizontal_z1_y1, horizontal_z1_y2, horizontal_z2],
         )
 
+    def test_classify_canonical_z_range_lines(self):
+        """Verify canonical z-range lines classify by xy orientation."""
+        lines = [
+            [[0, 3], [10, 3], [0, 100]],
+            [[2, 0], [2, 10], [10, 90]],
+        ]
+
+        vertical, horizontal = _classify_line(lines, self.eps)
+
+        self.assertEqual(vertical, [[[2, 0], [2, 10], [10, 90]]])
+        self.assertEqual(horizontal, [[[0, 3], [10, 3], [0, 100]]])
+
     def test_z_coordinate_mismatch(self):
         """Verify that lines with mismatched z coordinates are rejected."""
         with self.assertRaisesRegex(ValueError, "Z coordinates mismatch"):

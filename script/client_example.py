@@ -24,7 +24,7 @@ def _example_faces():
     }
     face3 = {
         "type": "BOX",
-        "dim": [9, 30, 0, 20, 40, 0],
+        "dim": [9, 30, 0, 20, 40, 10],
     }
     return [face1, face2, face3]
 
