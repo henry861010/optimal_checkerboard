@@ -20,7 +20,14 @@ class TestGetSnapRules(unittest.TestCase):
 
     def test_get_snap_rules_uses_z_tolerance(self):
         """Verify z lookup accepts near matches and rejects distant values."""
-        faces = [{"type": "LINE", "dim": [[1, 0, 2], [1, 10, 2]]}]
+        faces = [
+            {
+                "type": "LINE",
+                "dim": [1, 0, 1, 10],
+                "bottom_z": 2,
+                "top_z": 2,
+            }
+        ]
 
         mesher = OptimalMesh25D()
         mesher.set_pattern(faces, element_size=10, ratio=0.1)

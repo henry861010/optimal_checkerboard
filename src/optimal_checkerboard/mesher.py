@@ -60,27 +60,23 @@ Input Face Format
 =================
 BOX faces use a flattened rectangular bound:
 
-    {"type": "BOX", "dim": [x1, y1, z1, x2, y2, z2]}
+    {"type": "BOX", "dim": [x1, y1, x2, y2],
+     "bottom_z": z0, "top_z": z1}
 
-Only the lower z value is used when extracting the face edges.  POLYGON faces
-use one or more closed orthogonal polylines:
+POLYGON faces use one closed orthogonal polyline:
 
-    {"type": "POLYGON", "dim": [[[x, y, z], ...], ...]}
+    {"type": "POLYGON", "dim": [[x, y], ...],
+     "bottom_z": z0, "top_z": z1}
 
-LINE faces use one horizontal or vertical 3D segment on a single z plane, so
-``z1`` and ``z2`` must be equal:
+LINE faces use one horizontal or vertical segment:
 
-    {"type": "LINE", "dim": [[x1, y1, z1], [x2, y2, z2]]}
-
-Faces may also declare an active z interval with ``z_range`` or
-``z_bottom``/``z_top``.  In that case LINE endpoints may be 2D:
-
-    {"type": "LINE", "dim": [[x1, y1], [x2, y2]], "z_range": [z0, z1]}
+    {"type": "LINE", "dim": [x1, y1, x2, y2],
+     "bottom_z": z0, "top_z": z1}
 
 Important Invariants
 ====================
 - Input feature edges must be horizontal or vertical in xy.
-- Legacy 3D input lines must lie on exactly one z plane.
+- Every face must declare ``bottom_z`` and ``top_z``.
 - Pattern lines whose active z intervals overlap cannot share a rail across
   overlapping or touching xy spans if they would snap to different target
   coordinates.
@@ -163,6 +159,7 @@ class OptimalMesh25D:
         self.snap_rules_by_z = None
         self.rail_reference_index = None
         self.rail_node_index = None
+        self.node_axis_rail_ids = None
 
         self.mesh2d = None
         self.x_pattern_nodes = None
@@ -304,13 +301,44 @@ class OptimalMesh25D:
         if not np.issubdtype(nodes.dtype, np.floating):
             raise ValueError("nodes must contain floating point coordinates")
 
+        rules = self.get_snap_rules(z, eps=eps)
+        rules_by_axis = self._rules_by_axis_and_rail(rules)
+        target_values = {
+            "x": np.zeros(len(nodes), dtype=np.float64),
+            "y": np.zeros(len(nodes), dtype=np.float64),
+        }
+        target_masks = {
+            "x": np.zeros(len(nodes), dtype=bool),
+            "y": np.zeros(len(nodes), dtype=bool),
+        }
+
         touched = 0
-        for rule in self.get_snap_rules(z, eps=eps):
-            touched += self._apply_snap_rule(nodes, rule, eps=eps)
+        for rule in rules:
+            node_ids = self._snap_rule_node_ids(
+                rule,
+                rules_by_axis,
+                eps=eps,
+            )
+            axis = rule["axis"]
+            target_values[axis][node_ids] = rule["target_coord"]
+            target_masks[axis][node_ids] = True
+            touched += int(len(node_ids))
+
+        for axis, coord_axis in (("x", 0), ("y", 1)):
+            mask = target_masks[axis]
+            nodes[mask, coord_axis] = target_values[axis][mask]
         return touched
 
     def _apply_snap_rule(self, nodes, rule, eps=1e-6):
         """Apply one snap rule to a sorted rail-node span."""
+        node_ids = self._span_node_ids(rule, eps=eps)
+
+        coord_axis = 0 if rule["axis"] == "x" else 1
+        nodes[node_ids, coord_axis] = rule["target_coord"]
+        return int(len(node_ids))
+
+    def _span_node_ids(self, rule, eps=1e-6):
+        """Return nodes on a rail whose structural span lies in one rule."""
         axis = rule["axis"]
         rail_id = rule["rail_id"]
 
@@ -328,11 +356,80 @@ class OptimalMesh25D:
             rule["span_max"] + eps,
             side="right",
         )
-        node_ids = sorted_node_ids[lo:hi]
+        return sorted_node_ids[lo:hi]
 
-        coord_axis = 0 if axis == "x" else 1
-        nodes[node_ids, coord_axis] = rule["target_coord"]
-        return int(len(node_ids))
+    def _snap_rule_node_ids(self, rule, rules_by_axis, eps=1e-6):
+        """Return all nodes affected by a rule, including snapped corners."""
+        node_ids = self._span_node_ids(rule, eps=eps)
+        corner_node_ids = self._coupled_corner_node_ids(
+            rule,
+            rules_by_axis,
+            eps=eps,
+        )
+
+        if not len(corner_node_ids):
+            return node_ids
+        if not len(node_ids):
+            return np.unique(corner_node_ids)
+        return np.unique(np.concatenate((node_ids, corner_node_ids)))
+
+    def _coupled_corner_node_ids(self, rule, rules_by_axis, eps=1e-6):
+        """Return corner nodes whose opposite rail snaps into this span."""
+        if self.node_axis_rail_ids is None:
+            return np.empty(0, dtype=np.intp)
+
+        axis = rule["axis"]
+        opposite_axis = "y" if axis == "x" else "x"
+        opposite_rule_lists = rules_by_axis[opposite_axis]
+        if not opposite_rule_lists:
+            return np.empty(0, dtype=np.intp)
+
+        rail_node_ids = self.rail_node_index[axis][rule["rail_id"]]["node_ids"]
+        opposite_rail_ids = self.node_axis_rail_ids[opposite_axis][
+            rail_node_ids
+        ]
+        matching_node_ids = []
+
+        for opposite_rail_id in np.unique(opposite_rail_ids):
+            if opposite_rail_id < 0:
+                continue
+
+            for opposite_rule in opposite_rule_lists.get(
+                int(opposite_rail_id),
+                (),
+            ):
+                if not self._rule_targets_cross(rule, opposite_rule, eps=eps):
+                    continue
+
+                matching_node_ids.append(
+                    rail_node_ids[opposite_rail_ids == opposite_rail_id]
+                )
+                break
+
+        if not matching_node_ids:
+            return np.empty(0, dtype=np.intp)
+        return np.concatenate(matching_node_ids)
+
+    def _rule_targets_cross(self, rule, opposite_rule, eps=1e-6):
+        """Return whether two perpendicular snap rules meet at a corner."""
+        return (
+            rule["span_min"] - eps
+            <= opposite_rule["target_coord"]
+            <= rule["span_max"] + eps
+            and opposite_rule["span_min"] - eps
+            <= rule["target_coord"]
+            <= opposite_rule["span_max"] + eps
+        )
+
+    def _rules_by_axis_and_rail(self, rules):
+        """Group snap rules by axis and rail id for same-z corner lookup."""
+        rules_by_axis = {"x": {}, "y": {}}
+        for rule in rules:
+            rules_by_axis[rule["axis"]].setdefault(
+                rule["rail_id"],
+                [],
+            ).append(rule)
+        return rules_by_axis
 
     def _check_pattern_ready(self):
         """Raise an error if pattern preprocessing has not been completed."""
@@ -426,7 +523,21 @@ class OptimalMesh25D:
                 eps=eps,
             ),
         }
+        self.node_axis_rail_ids = self._build_node_axis_rail_ids(len(nodes))
         self.rail_reference_index = self.rail_node_index
+
+    def _build_node_axis_rail_ids(self, node_count):
+        """Return each node's structural rail id for both axes."""
+        node_axis_rail_ids = {
+            "x": np.full(node_count, -1, dtype=np.intp),
+            "y": np.full(node_count, -1, dtype=np.intp),
+        }
+
+        for axis, rail_indices in self.rail_node_index.items():
+            for rail_id, rail_index in enumerate(rail_indices):
+                node_axis_rail_ids[axis][rail_index["node_ids"]] = rail_id
+
+        return node_axis_rail_ids
 
     def _build_axis_node_index(
         self,

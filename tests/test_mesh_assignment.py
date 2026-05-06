@@ -15,7 +15,14 @@ from optimal_checkerboard import Mesh2D, OptimalMesh25D
 class TestMeshAssignment(unittest.TestCase):
     def test_mesh_assignment_indexes_nodes_and_elements_directly(self):
         """Verify assigned meshes keep public node/element arrays as source."""
-        faces = [{"type": "BOX", "dim": [0, 0, 0, 10, 10, 0]}]
+        faces = [
+            {
+                "type": "BOX",
+                "dim": [0, 0, 10, 10],
+                "bottom_z": 0,
+                "top_z": 0,
+            }
+        ]
         mesh2d = Mesh2D(
             nodes=np.asarray(
                 [
@@ -42,7 +49,14 @@ class TestMeshAssignment(unittest.TestCase):
 
     def test_mesh_assignment_rejects_out_of_bounds_element_ids(self):
         """Verify element connectivity must reference existing nodes."""
-        faces = [{"type": "BOX", "dim": [0, 0, 0, 10, 10, 0]}]
+        faces = [
+            {
+                "type": "BOX",
+                "dim": [0, 0, 10, 10],
+                "bottom_z": 0,
+                "top_z": 0,
+            }
+        ]
         mesh2d = Mesh2D(
             nodes=np.asarray(
                 [
@@ -63,7 +77,14 @@ class TestMeshAssignment(unittest.TestCase):
 
     def test_mesh_assignment_rejects_invalid_node_shape(self):
         """Verify assigned mesh nodes must be a 2D coordinate array."""
-        faces = [{"type": "BOX", "dim": [0, 0, 0, 10, 10, 0]}]
+        faces = [
+            {
+                "type": "BOX",
+                "dim": [0, 0, 10, 10],
+                "bottom_z": 0,
+                "top_z": 0,
+            }
+        ]
         mesh2d = Mesh2D(
             nodes=np.asarray([0, 0, 0], dtype=np.float32),
             elements=np.asarray([[0, 1, 2, 3]], dtype=np.int32),

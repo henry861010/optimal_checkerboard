@@ -15,7 +15,14 @@ from optimal_checkerboard import OptimalMesh25D
 class TestApplySnapRulesAtZ(unittest.TestCase):
     def test_apply_snap_rules_requires_mesh(self):
         """Verify snap rules cannot be applied before a mesh is indexed."""
-        faces = [{"type": "LINE", "dim": [[1, 0, 0], [1, 10, 0]]}]
+        faces = [
+            {
+                "type": "LINE",
+                "dim": [1, 0, 1, 10],
+                "bottom_z": 0,
+                "top_z": 0,
+            }
+        ]
 
         mesher = OptimalMesh25D()
         mesher.set_pattern(faces, element_size=10, ratio=0.1)
@@ -27,14 +34,29 @@ class TestApplySnapRulesAtZ(unittest.TestCase):
         """Verify snap rules move rail nodes back to true pattern positions."""
         faces = [
             {
-                "type": "POLYGON",
-                "dim": [
-                    [[1, 0, 0], [1, 10, 0]],
-                    [[1.5, 11, 0], [1.5, 20, 0]],
-                    [[0, 0, 0], [3, 0, 0]],
-                    [[0, 20, 0], [3, 20, 0]],
-                ],
-            }
+                "type": "LINE",
+                "dim": [1, 0, 1, 10],
+                "bottom_z": 0,
+                "top_z": 0,
+            },
+            {
+                "type": "LINE",
+                "dim": [1.5, 11, 1.5, 20],
+                "bottom_z": 0,
+                "top_z": 0,
+            },
+            {
+                "type": "LINE",
+                "dim": [0, 0, 3, 0],
+                "bottom_z": 0,
+                "top_z": 0,
+            },
+            {
+                "type": "LINE",
+                "dim": [0, 20, 3, 20],
+                "bottom_z": 0,
+                "top_z": 0,
+            },
         ]
 
         mesher = OptimalMesh25D()
@@ -51,8 +73,18 @@ class TestApplySnapRulesAtZ(unittest.TestCase):
     def test_apply_snap_rules_mutates_only_matching_node_span(self):
         """Verify span queries leave rail nodes outside the rule intact."""
         faces = [
-            {"type": "LINE", "dim": [[1, 0, 0], [1, 5, 0]]},
-            {"type": "LINE", "dim": [[1.5, 20, 0], [1.5, 25, 0]]},
+            {
+                "type": "LINE",
+                "dim": [1, 0, 1, 5],
+                "bottom_z": 0,
+                "top_z": 0,
+            },
+            {
+                "type": "LINE",
+                "dim": [1.5, 20, 1.5, 25],
+                "bottom_z": 0,
+                "top_z": 0,
+            },
         ]
 
         mesher = OptimalMesh25D()
@@ -87,9 +119,52 @@ class TestApplySnapRulesAtZ(unittest.TestCase):
         self.assertTrue(np.allclose(after_x[untouched_span], 1.25))
         self.assertTrue(np.allclose(after_x[second_span], 1.5))
 
+    def test_cross_z_box_corner_snaps_to_next_face(self):
+        """Verify shared-rail corners snap when both axes move at one z."""
+        faces = [
+            {
+                "type": "BOX",
+                "dim": [0, 0, 10, 10],
+                "bottom_z": 0,
+                "top_z": 10,
+            },
+            {
+                "type": "BOX",
+                "dim": [2, 1, 8, 5],
+                "bottom_z": 11,
+                "top_z": 20,
+            },
+        ]
+
+        mesher = OptimalMesh25D()
+        mesher.set_pattern(faces, element_size=11.0, ratio=0.2)
+        mesh = mesher.mesh_checkerboard_box([-1, -1, 11, 11])
+
+        mesher.apply_snap_rules_at_z(0)
+        mesher.apply_snap_rules_at_z(11)
+
+        points = {
+            (round(float(x), 6), round(float(y), 6))
+            for x, y in mesh.nodes[:, :2]
+        }
+
+        self.assertIn((2.0, 1.0), points)
+        self.assertIn((8.0, 1.0), points)
+        self.assertIn((2.0, 5.0), points)
+        self.assertIn((8.0, 5.0), points)
+        self.assertNotIn((0.0, 0.0), points)
+        self.assertNotIn((10.0, 0.0), points)
+
     def test_apply_snap_rules_rejects_bad_nodes_shape(self):
         """Verify callers receive a clear error for invalid node arrays."""
-        faces = [{"type": "LINE", "dim": [[1, 0, 0], [1, 10, 0]]}]
+        faces = [
+            {
+                "type": "LINE",
+                "dim": [1, 0, 1, 10],
+                "bottom_z": 0,
+                "top_z": 0,
+            }
+        ]
 
         mesher = OptimalMesh25D()
         mesher.set_pattern(faces, element_size=10, ratio=0.1)

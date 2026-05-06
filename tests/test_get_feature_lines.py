@@ -14,9 +14,24 @@ class TestGetFeatureLines(unittest.TestCase):
     def test_get_feature_lines_return_details(self):
         """Verify detailed feature extraction returns rails and snap rules."""
         faces = [
-            {"type": "LINE", "dim": [[1, 0, 0], [1, 5, 0]]},
-            {"type": "LINE", "dim": [[1.5, 6, 0], [1.5, 11, 0]]},
-            {"type": "LINE", "dim": [[0, 3, 0], [5, 3, 0]]},
+            {
+                "type": "LINE",
+                "dim": [1, 0, 1, 5],
+                "bottom_z": 0,
+                "top_z": 0,
+            },
+            {
+                "type": "LINE",
+                "dim": [1.5, 6, 1.5, 11],
+                "bottom_z": 0,
+                "top_z": 0,
+            },
+            {
+                "type": "LINE",
+                "dim": [0, 3, 5, 3],
+                "bottom_z": 0,
+                "top_z": 0,
+            },
         ]
 
         (

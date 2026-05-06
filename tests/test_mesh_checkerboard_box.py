@@ -22,7 +22,14 @@ class TestMeshCheckerboardBox(unittest.TestCase):
 
     def test_mesh_checkerboard_box_rejects_invalid_dim(self):
         """Verify checkerboard bounds must be 4D or 6D."""
-        faces = [{"type": "BOX", "dim": [0, 0, 0, 10, 10, 0]}]
+        faces = [
+            {
+                "type": "BOX",
+                "dim": [0, 0, 10, 10],
+                "bottom_z": 0,
+                "top_z": 0,
+            }
+        ]
 
         mesher = OptimalMesh25D()
         mesher.set_pattern(faces, element_size=10, ratio=0.1)
@@ -32,7 +39,14 @@ class TestMeshCheckerboardBox(unittest.TestCase):
 
     def test_mesh_checkerboard_box_builds_nodes_and_elements(self):
         """Verify generated meshes expose only node coordinates and elements."""
-        faces = [{"type": "BOX", "dim": [0, 0, 0, 10, 10, 0]}]
+        faces = [
+            {
+                "type": "BOX",
+                "dim": [0, 0, 10, 10],
+                "bottom_z": 0,
+                "top_z": 0,
+            }
+        ]
 
         mesher = OptimalMesh25D()
         mesher.set_pattern(faces, element_size=10, ratio=0.1)

@@ -12,31 +12,52 @@ def _add_src_to_path():
     src_root = os.path.join(repo_root, "src")
     sys.path.insert(0, src_root)
 
-
+'''
 def _example_faces():
     face1 = {
         "type": "BOX",
-        "dim": [0, 0, 0, 10, 10, 0],
+        "dim": [0, 0, 10, 10],
+        "bottom_z": 0,
+        "top_z": 10,
     }
     face2 = {
         "type": "BOX",
-        "dim": [11, 12, 0, 18, 18, 0],
+        "dim": [11, 12, 18, 18],
+        "bottom_z": 0,
+        "top_z": 10,
     }
     face3 = {
         "type": "BOX",
-        "dim": [9, 30, 0, 20, 40, 10],
+        "dim": [9, 30, 20, 40],
+        "bottom_z": 0,
+        "top_z": 10,
     }
     return [face1, face2, face3]
+'''
+def _example_faces():
+    face1 = {
+        "type": "BOX",
+        "dim": [0, 0, 10, 10],
+        "bottom_z": 0,
+        "top_z": 10,
+    }
+    face2 = {
+        "type": "BOX",
+        "dim": [2, 1, 8, 5],
+        "bottom_z": 11,
+        "top_z": 20,
+    }
+    return [face1, face2]
 
 
 def _collect_points(value, points):
-    """Append every xyz point found in a nested face dimension object."""
+    """Append every xy point found in a nested face dimension object."""
     if (
         isinstance(value, (list, tuple))
-        and len(value) == 3
+        and len(value) >= 2
         and all(isinstance(item, (int, float)) for item in value)
     ):
-        points.append(value)
+        points.append(value[:2])
         return
 
     if isinstance(value, (list, tuple)):
@@ -49,10 +70,11 @@ def _face_bounds(faces, offset=1):
     points = []
     for face in faces:
         if face["type"] == "BOX":
-            x1, y1, _, x2, y2, _ = face["dim"]
-            points.extend([(x1, y1, 0), (x2, y2, 0)])
+            x1, y1, x2, y2 = face["dim"]
+            points.extend([(x1, y1), (x2, y2)])
         elif face["type"] == "LINE":
-            points.extend(face["dim"])
+            x1, y1, x2, y2 = face["dim"]
+            points.extend([(x1, y1), (x2, y2)])
         elif face["type"] == "POLYGON":
             _collect_points(face["dim"], points)
         else:
@@ -63,7 +85,12 @@ def _face_bounds(faces, offset=1):
 
     x_values = [float(point[0]) for point in points]
     y_values = [float(point[1]) for point in points]
-    return [min(x_values) - offset, min(y_values) - offset, max(x_values) + offset, max(y_values) + offset]
+    return [
+        min(x_values) - offset,
+        min(y_values) - offset,
+        max(x_values) + offset,
+        max(y_values) + offset,
+    ]
 
 
 def _format_z_value(z_value):
@@ -183,8 +210,8 @@ def main():
     faces = _example_faces()
     group_lines_v, group_lines_h, x_list, y_list = mesher.set_pattern(
         faces,
-        element_size=11.0,
-        ratio=0.2,
+        element_size=1,
+        ratio=1,
     )
     mesh2d = mesher.mesh_checkerboard_box(_face_bounds(faces))
 
