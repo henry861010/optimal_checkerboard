@@ -31,6 +31,8 @@ snap rule
     A compact instruction that tells the drag workflow how to move nodes from
     a shared rail back to a true pattern coordinate at the feature bottom z.
     A rule stores axis, rail id, z, target coordinate, and the span to modify.
+    Restore rules are indexed by feature top z, staged at that z, and applied
+    only when the next higher z layer is processed.
 
 rail node index
     A sorted node lookup table built after 2D mesh creation.  It allows snap
@@ -52,7 +54,10 @@ Minimal Example
     mesher.set_pattern(faces, element_size=10.0, ratio=0.1)
     mesh2d = mesher.mesh_checkerboard_box([xmin, ymin, xmax, ymax])
 
-    for z_value in sorted(mesher.get_snap_rules()):
+    z_events = sorted(
+        set(mesher.get_snap_rules()) | set(mesher.get_restore_rules())
+    )
+    for z_value in z_events:
         mesher.apply_snap_rules_at_z(z_value)
         # Drag the adjusted mesh2d to the next pattern z in client code.
 
@@ -135,6 +140,7 @@ class OptimalMesh25D:
         y_list: Shared y rail coordinates used by the checkerboard mesh.
         rails: Serialized rail metadata grouped by axis.
         snap_rules_by_z: Mapping from z value to snap rules.
+        restore_rules_by_z: Mapping from top z to delayed restore rules.
         rail_node_index: Node ids on each rail, sorted by span coordinate.
         mesh2d: The generated or assigned 2D mesh.
 
@@ -157,6 +163,9 @@ class OptimalMesh25D:
 
         self.rails = None
         self.snap_rules_by_z = None
+        self.restore_rules_by_z = None
+        self._restore_rule_buffer = []
+        self._restore_buffer_source_z = None
         self.rail_reference_index = None
         self.rail_node_index = None
         self.node_axis_rail_ids = None
@@ -166,7 +175,7 @@ class OptimalMesh25D:
         self.y_pattern_nodes = None
 
     def set_pattern(self, faces, element_size, ratio=0.1):
-        """Extract shared rails and snap rules from pattern faces.
+        """Extract shared rails plus snap and restore rules from faces.
 
         Args:
             faces: BOX, POLYGON, or LINE face dictionaries.  See the module
@@ -181,7 +190,8 @@ class OptimalMesh25D:
             compatibility with earlier client code.
 
         Side Effects:
-            Populates rail metadata, snap rules, and checkerboard rail lists.
+            Populates rail metadata, snap/restore rules, and checkerboard
+            rail lists.
         """
         self.element_size = float(element_size)
         self.faces = faces
@@ -193,8 +203,10 @@ class OptimalMesh25D:
             self.x_list,
             self.y_list,
             self.snap_rules_by_z,
+            self.restore_rules_by_z,
             self.rails,
         ) = _get_feature_lines(self.faces, merge_tol, return_details=True)
+        self.reset_snap_state()
 
         return self.group_lines_v, self.group_lines_h, self.x_list, self.y_list
 
@@ -222,6 +234,7 @@ class OptimalMesh25D:
         self.mesh2d = Mesh2D(nodes=nodes, elements=elements)
         self._validate_mesh2d_arrays()
         self._build_rail_node_index()
+        self.reset_snap_state()
         return self.mesh2d
 
     def mesh_assignment(self, mesh2d):
@@ -242,6 +255,7 @@ class OptimalMesh25D:
         self.mesh_y_list = np.asarray(self.y_list, dtype=np.float64)
         self._validate_mesh2d_arrays()
         self._build_rail_node_index()
+        self.reset_snap_state()
         return self.mesh2d
 
     def get_snap_rules(self, z=None, eps=1e-6):
@@ -254,26 +268,56 @@ class OptimalMesh25D:
         Returns:
             Either ``snap_rules_by_z`` or a list of rules for one z event.
         """
-        if self.snap_rules_by_z is None:
+        return self._get_rules_from_z_map(self.snap_rules_by_z, z, eps=eps)
+
+    def get_restore_rules(self, z=None, eps=1e-6):
+        """Return delayed restore rules indexed by their feature top z.
+
+        Restore rules found at z are staged during that call and applied at
+        the next higher z passed to :meth:`apply_snap_rules_at_z`.
+        """
+        return self._get_rules_from_z_map(
+            self.restore_rules_by_z,
+            z,
+            eps=eps,
+        )
+
+    def reset_snap_state(self):
+        """Clear delayed restore state for a fresh z traversal."""
+        self._restore_rule_buffer = []
+        self._restore_buffer_source_z = None
+
+    def _get_rules_from_z_map(self, rules_by_z, z=None, eps=1e-6):
+        """Return all z-indexed rules or one tolerant z bucket."""
+        if rules_by_z is None:
             return {} if z is None else []
 
         if z is None:
-            return self.snap_rules_by_z
+            return rules_by_z
+
+        _, rules = self._get_rules_and_z_from_z_map(rules_by_z, z, eps=eps)
+        return rules
+
+    def _get_rules_and_z_from_z_map(self, rules_by_z, z, eps=1e-6):
+        """Return the matched z key and rule bucket from a z-indexed map."""
+        if rules_by_z is None:
+            return None, []
 
         z = float(z)
-        if z in self.snap_rules_by_z:
-            return self.snap_rules_by_z[z]
+        if z in rules_by_z:
+            return z, rules_by_z[z]
 
-        for z_key, rules in self.snap_rules_by_z.items():
+        for z_key, rules in rules_by_z.items():
             if abs(float(z_key) - z) <= eps:
-                return rules
-        return []
+                return z_key, rules
+        return None, []
 
     def apply_snap_rules_at_z(self, z, nodes=None, eps=1e-6):
         """Move rail nodes to true pattern coordinates.
 
         Args:
-            z: Pattern z value whose snap rules should be applied.
+            z: Pattern z value whose snap rules should be applied, and whose
+                top-z restore rules should be staged for the next higher z.
             nodes: Optional ``(n, 2+)`` node array to mutate. If omitted,
                 mutates ``self.mesh2d.nodes``.
             eps: Tolerance used for z matching and span selection.
@@ -301,7 +345,22 @@ class OptimalMesh25D:
         if not np.issubdtype(nodes.dtype, np.floating):
             raise ValueError("nodes must contain floating point coordinates")
 
-        rules = self.get_snap_rules(z, eps=eps)
+        z = float(z)
+        restore_rules = self._consume_restore_rule_buffer(z, eps=eps)
+        snap_rules = self.get_snap_rules(z, eps=eps)
+        touched = self._apply_snap_rule_batch(
+            nodes,
+            restore_rules + snap_rules,
+            eps=eps,
+        )
+        self._stage_restore_rules_at_z(z, eps=eps)
+        return touched
+
+    def _apply_snap_rule_batch(self, nodes, rules, eps=1e-6):
+        """Apply same-z restore and snap rules as one atomic update."""
+        if not rules:
+            return 0
+
         rules_by_axis = self._rules_by_axis_and_rail(rules)
         target_values = {
             "x": np.zeros(len(nodes), dtype=np.float64),
@@ -328,6 +387,32 @@ class OptimalMesh25D:
             mask = target_masks[axis]
             nodes[mask, coord_axis] = target_values[axis][mask]
         return touched
+
+    def _consume_restore_rule_buffer(self, z, eps=1e-6):
+        """Return staged restore rules only after their top-z layer passes."""
+        if not self._restore_rule_buffer:
+            return []
+
+        source_z = self._restore_buffer_source_z
+        if source_z is None or z <= float(source_z) + eps:
+            return []
+
+        rules = self._restore_rule_buffer
+        self.reset_snap_state()
+        return rules
+
+    def _stage_restore_rules_at_z(self, z, eps=1e-6):
+        """Stage top-z restore rules for the next higher z layer."""
+        source_z, rules = self._get_rules_and_z_from_z_map(
+            self.restore_rules_by_z,
+            z,
+            eps=eps,
+        )
+        if source_z is None or not rules:
+            return
+
+        self._restore_rule_buffer = list(rules)
+        self._restore_buffer_source_z = source_z
 
     def _apply_snap_rule(self, nodes, rule, eps=1e-6):
         """Apply one snap rule to a sorted rail-node span."""

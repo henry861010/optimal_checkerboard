@@ -1,6 +1,6 @@
 # feature_lines 演算法資料流說明
 
-這份文件說明 `src/optimal_checkerboard/algorithms/feature_lines.py` 相關的資料流、程式呼叫順序、各 function 的責任，以及每個階段產生的資料格式。這段流程的目的，是把輸入的幾何 face 轉成 checkerboard mesh 需要的共享 grid rail 與 snap rule；後段也說明 `OptimalMesh25D.apply_snap_rules_at_z()` 如何用這些 snap rules 修正每個 z layer 的節點。
+這份文件說明 `src/optimal_checkerboard/algorithms/feature_lines.py` 相關的資料流、程式呼叫順序、各 function 的責任，以及每個階段產生的資料格式。這段流程的目的，是把輸入的幾何 face 轉成 checkerboard mesh 需要的共享 grid rail、bottom snap rule 與 top restore rule；後段也說明 `OptimalMesh25D.apply_snap_rules_at_z()` 如何用這些 rules 修正每個 z layer 的節點。
 
 ## 核心目的
 
@@ -8,7 +8,7 @@
 
 1. 從 `BOX`、`POLYGON`、`LINE` face 抽出 xy 線段，並附上 active z interval。
 2. 將線段分成 x rail 與 y rail 候選特徵。
-3. 將彼此很接近、且不會造成同一 z 平面 snap 衝突的線段合併成 shared rail，並產生每個 z layer 的 snap rules。
+3. 將彼此很接近、且不會造成同一 z 平面 snap 衝突的線段合併成 shared rail，並產生每個 z layer 的 snap rules 與 top-z restore rules。
 
 在整個 mesher 流程裡，它位於前處理階段：
 
@@ -27,7 +27,7 @@ OptimalMesh25D.set_pattern()
               -> _new_rail()
               -> _add_to_rail()
               -> _serialize_rail()
-              -> _rail_snap_rules()
+              -> _rail_rules()
 OptimalMesh25D.mesh_checkerboard_box()
   -> _build_rail_node_index()
       -> _build_node_axis_rail_ids()
@@ -51,7 +51,7 @@ _get_feature_lines(faces, merge_tol, return_details=True)
 
 ## 輸入資料格式
 
-`faces` 是 face dictionary list，每個 dictionary 有 `type`、`dim`、`bottom_z`、`top_z`。`bottom_z` / `top_z` 表示這個 face 在 z 方向的 active interval；feature line 會在 `bottom_z` 產生 snap event，並保留 `top_z` 供 rail 合併判斷 active z overlap。
+`faces` 是 face dictionary list，每個 dictionary 有 `type`、`dim`、`bottom_z`、`top_z`。`bottom_z` / `top_z` 表示這個 face 在 z 方向的 active interval；feature line 會在 `bottom_z` 產生 snap event，並在 `top_z` 產生 delayed restore event。restore event 在 `top_z` 當層只會被放入 buffer，等下一個更高的 z layer 才把節點還原回 shared rail 的 default coordinate，因此 `top_z` 本身仍保留 pattern。
 
 ### BOX
 
@@ -144,6 +144,7 @@ _get_feature_lines(faces, merge_tol, return_details=True)
     x_list,
     y_list,
     snap_rules_by_z,
+    restore_rules_by_z,
     rails,
 )
 ```
@@ -235,7 +236,7 @@ ValueError("Unsupported face type: ...")
 
 位置：`rail_builder.py`
 
-責任：把 raw lines 轉成 shared rails、rail coordinate list，以及依 z 分組的 snap rules。
+責任：把 raw lines 轉成 shared rails、rail coordinate list，以及依 z 分組的 snap / restore rules。
 
 流程：
 
@@ -244,6 +245,7 @@ ValueError("Unsupported face type: ...")
 3. horizontal lines 轉成 axis=`"y"` 的 feature。
 4. `_build_axis_rails()` 分別建立 x rails 與 y rails。
 5. 合併 x/y snap rules，依 z 分組成 `snap_rules_by_z`。
+6. 合併 x/y restore rules，依 top z 分組成 `restore_rules_by_z`。
 
 回傳格式：
 
@@ -255,6 +257,10 @@ ValueError("Unsupported face type: ...")
     "y_list": [y_rail_coord, ...],
     "snap_rules_by_z": {
         z_value: [snap_rule, ...],
+        ...
+    },
+    "restore_rules_by_z": {
+        top_z_value: [restore_rule, ...],
         ...
     },
 }
@@ -271,7 +277,7 @@ raw lines
   -> classified lines
   -> normalized features
   -> internal rails
-  -> public rails + snap rules
+  -> public rails + snap / restore rules
 ```
 
 對應 function：
@@ -280,11 +286,11 @@ raw lines
 | --- | --- | --- | --- |
 | 分類 | `_classify_line()` | raw lines | `vertical_lines`, `horizontal_lines` |
 | 標準化 | `_line_to_feature()` | 單條 line | feature dict |
-| 建 rail | `_build_axis_rails()` | 同 axis features | public rails, snap rules |
+| 建 rail | `_build_axis_rails()` | 同 axis features | public rails, snap / restore rules |
 | 合併判斷 | `_can_add_to_rail()` | rail + feature | `True` / `False` |
 | 更新 rail | `_new_rail()` / `_add_to_rail()` | feature 或 rail + feature | internal rail |
 | 輸出 rail | `_serialize_rail()` | internal rail | public rail dict |
-| 輸出 snap | `_rail_snap_rules()` | internal rail | snap rule list |
+| 輸出 rule | `_rail_rules()` | internal rail | snap / restore rule lists |
 
 `build_shared_rails()` 是這些步驟的 orchestration function。它本身不直接做複雜幾何判斷，而是把 x/y 兩個方向拆開，分別交給 `_build_axis_rails()`。
 
@@ -322,14 +328,14 @@ horizontal_features = [
 然後分別建立 rails：
 
 ```python
-x_rails, x_snap_rules = _build_axis_rails(
+x_rails, x_snap_rules, x_restore_rules = _build_axis_rails(
     vertical_features,
     "x",
     merge_tol,
     eps,
 )
 
-y_rails, y_snap_rules = _build_axis_rails(
+y_rails, y_snap_rules, y_restore_rules = _build_axis_rails(
     horizontal_features,
     "y",
     merge_tol,
@@ -337,12 +343,16 @@ y_rails, y_snap_rules = _build_axis_rails(
 )
 ```
 
-最後將 x/y snap rules 合併，依 z 分組：
+最後將 x/y snap rules 合併，依 bottom z 分組；restore rules 也依 top z 分組：
 
 ```python
 snap_rules_by_z = defaultdict(list)
 for rule in x_snap_rules + y_snap_rules:
     snap_rules_by_z[rule["z"]].append(rule)
+
+restore_rules_by_z = defaultdict(list)
+for rule in x_restore_rules + y_restore_rules:
+    restore_rules_by_z[rule["z"]].append(rule)
 ```
 
 再轉成一般 dict，並排序：
@@ -370,6 +380,7 @@ snap_rules_by_z = {
     "x_list": [rail["coord"] for rail in x_rails],
     "y_list": [rail["coord"] for rail in y_rails],
     "snap_rules_by_z": snap_rules_by_z,
+    "restore_rules_by_z": restore_rules_by_z,
 }
 ```
 
@@ -749,16 +760,17 @@ merge_tol = 2.2
 | `member_count` | 合併了幾條 pattern feature lines |
 | `lines_by_z` | 原始 pattern lines，依 snap z layer 分組 |
 
-### `_rail_snap_rules(rail, rail_id)`
+### `_rail_rules(rail, rail_id)`
 
 位置：`rail_builder.py`
 
-責任：為 rail 中的每個 feature 建立 snap rule，並 deduplicate 完全相同的 rule。
+責任：為 rail 中的每個 feature 建立 bottom snap rule 與 top restore rule，並 deduplicate 完全相同的 rule。
 
 輸出格式：
 
 ```python
 {
+    "kind": "snap",
     "axis": "x",
     "rail_id": 0,
     "rail_coord": 1.25,
@@ -771,6 +783,8 @@ merge_tol = 2.2
     "feature_id": 0,
 }
 ```
+
+restore rule 的格式相同，但 `kind` 是 `"restore"`，`z` 是 `z_top`，`target_coord` 會等於 `rail_coord`。它不會在 `top_z` 當層立即執行，而是由 `apply_snap_rules_at_z(top_z)` 放進 buffer，等下一個更高 z layer 才還原。
 
 欄位意義：
 
@@ -1023,15 +1037,16 @@ snap_rules = [snap_rule, ...]
 
 這個輸出會保存在 `rail_data["x_rails"]` 或 `rail_data["y_rails"]`。
 
-### `_rail_snap_rules(rail, rail_id)`
+### `_rail_rules(rail, rail_id)`
 
-用途：由一條 internal rail 的 members 產生 snap rules，並移除重複 rule。
+用途：由一條 internal rail 的 members 產生 snap / restore rules，並移除重複 rule。
 
 輸出：
 
 ```python
 [
     {
+        "kind": "snap",
         "axis": str,
         "rail_id": int,
         "rail_coord": float,
@@ -1061,6 +1076,9 @@ snap_rules = [snap_rule, ...]
     "y_list": [float, ...],
     "snap_rules_by_z": {
         z: [snap_rule, ...],
+    },
+    "restore_rules_by_z": {
+        z_top: [restore_rule, ...],
     },
 }
 ```
@@ -1311,6 +1329,7 @@ self.group_lines_h = group_lines_h
 self.x_list = x_list
 self.y_list = y_list
 self.snap_rules_by_z = snap_rules_by_z
+self.restore_rules_by_z = restore_rules_by_z
 self.rails = {"x": x_rails, "y": y_rails}
 ```
 
@@ -1320,6 +1339,7 @@ self.rails = {"x": x_rails, "y": y_rails}
 - `rails` 會用來建立 rail node index，記錄每條 shared rail 上有哪些結構節點，以及這些節點在 span axis 上的排序。
 - `node_axis_rail_ids` 會記錄每個節點分別屬於哪條 x rail 與 y rail，讓 snap 時可以找到 shared-rail 交點。
 - `snap_rules_by_z` 會在 `apply_snap_rules_at_z(z)` 時查出該 z layer 要執行的座標修正。
+- `restore_rules_by_z` 會在 `top_z` 當層把還原 rule 放進 buffer，下一個更高 z layer 開始時才執行。
 
 ### `apply_snap_rules_at_z(z)` 的套用模型
 
@@ -1327,14 +1347,16 @@ snap rule 的 `span_min` / `span_max` 是用「結構上的 shared rail 座標�
 
 目前的套用流程是：
 
-1. 取出同一個 z layer 的全部 snap rules。
-2. 用 `_rules_by_axis_and_rail()` 依 axis 與 rail id 分組，供 corner lookup 使用。
-3. 每條 rule 先用 `_span_node_ids()` 找出自己 rail 上、structural span 落在 `[span_min, span_max]` 的節點。
-4. 再用 `_coupled_corner_node_ids()` 補上同 z layer 的 perpendicular snap corner：如果 x rule 的 target x 落在某條 y rule 的 x span 內，而且 y rule 的 target y 也落在該 x rule 的 y span 內，兩條 shared rail 的交點就應該同時被這兩條 rule 納入。
-5. 所有 rule 都只先寫入 `target_values` / `target_masks`。
-6. 最後一次把 x 與 y 兩個座標軸的 target values 寫回 nodes。
+1. 如果 restore buffer 來自較低的 `top_z`，先取出這批 restore rules；若目前仍是同一個 `top_z`，不執行 restore。
+2. 取出同一個 z layer 的全部 bottom snap rules。
+3. 將 restore rules 放在前面、snap rules 放在後面，組成同一批 atomic update；若同 node 同 axis 同時命中，snap 會覆蓋 restore。
+4. 用 `_rules_by_axis_and_rail()` 依 axis 與 rail id 分組，供 corner lookup 使用。
+5. 每條 rule 先用 `_span_node_ids()` 找出自己 rail 上、structural span 落在 `[span_min, span_max]` 的節點。
+6. 再用 `_coupled_corner_node_ids()` 補上同 z layer 的 perpendicular corner。
+7. 所有 rule 都只先寫入 `target_values` / `target_masks`，最後一次把 x 與 y 兩個座標軸的 target values 寫回 nodes。
+8. 最後查 `restore_rules_by_z[z]`，若目前 z 是某些 feature 的 `top_z`，把這批 restore rules 放進 buffer，等待下一個更高 z layer。
 
-因此同一個 z layer 的 snap 是「先收集、後寫回」的 atomic update。這避免 x/y rules 因套用順序互相影響，也讓 shared rail corner 可以正確移回真實幾何角點。
+因此同一個 z layer 的 snap / restore 是「先收集、後寫回」的 atomic update。這避免 x/y rules 因套用順序互相影響，也讓 shared rail corner 可以正確移回真實幾何角點；同時 `top_z` 當層不會被提早還原。
 
 ### corner coupling 範例
 

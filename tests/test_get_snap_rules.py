@@ -17,6 +17,8 @@ class TestGetSnapRules(unittest.TestCase):
 
         self.assertEqual(mesher.get_snap_rules(), {})
         self.assertEqual(mesher.get_snap_rules(0), [])
+        self.assertEqual(mesher.get_restore_rules(), {})
+        self.assertEqual(mesher.get_restore_rules(0), [])
 
     def test_get_snap_rules_uses_z_tolerance(self):
         """Verify z lookup accepts near matches and rejects distant values."""
@@ -37,6 +39,26 @@ class TestGetSnapRules(unittest.TestCase):
             mesher.get_snap_rules(2),
         )
         self.assertEqual(mesher.get_snap_rules(2.01), [])
+
+    def test_get_restore_rules_uses_z_tolerance(self):
+        """Verify delayed restore-rule lookup accepts near top-z matches."""
+        faces = [
+            {
+                "type": "LINE",
+                "dim": [1, 0, 1, 10],
+                "bottom_z": 2,
+                "top_z": 8,
+            }
+        ]
+
+        mesher = OptimalMesh25D()
+        mesher.set_pattern(faces, element_size=10, ratio=0.1)
+
+        self.assertEqual(
+            mesher.get_restore_rules(8.0000005),
+            mesher.get_restore_rules(8),
+        )
+        self.assertEqual(mesher.get_restore_rules(8.01), [])
 
 
 if __name__ == "__main__":

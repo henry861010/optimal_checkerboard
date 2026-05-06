@@ -30,6 +30,7 @@ def _get_feature_lines(faces, element_size, return_details=False):
     if return_details:
         return result + (
             rail_data["snap_rules_by_z"],
+            rail_data["restore_rules_by_z"],
             {
                 "x": rail_data["x_rails"],
                 "y": rail_data["y_rails"],

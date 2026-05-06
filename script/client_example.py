@@ -232,7 +232,10 @@ def main():
             "elements": mesh2d.elements.copy(),
         }
     )
-    for z_value in sorted(mesher.get_snap_rules()):
+    z_events = sorted(
+        set(mesher.get_snap_rules()) | set(mesher.get_restore_rules())
+    )
+    for z_value in z_events:
         mesher.apply_snap_rules_at_z(z_value)
         layers.append(
             {

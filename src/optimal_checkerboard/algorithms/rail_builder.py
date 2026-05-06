@@ -218,7 +218,7 @@ def _new_rail(axis, feature):
 def _build_axis_rails(features, axis, merge_tol, eps):
     """Group same-axis line features into shared rails and snap rules."""
     if not features:
-        return [], []
+        return [], [], []
 
     rails = []
     active_start = 0
@@ -268,10 +268,13 @@ def _build_axis_rails(features, axis, merge_tol, eps):
     rails.sort(key=lambda rail: rail["coord"])
     public_rails = []
     snap_rules = []
+    restore_rules = []
 
     for rail_id, rail in enumerate(rails):
         public_rails.append(_serialize_rail(rail, rail_id))
-        snap_rules.extend(_rail_snap_rules(rail, rail_id))
+        rail_snap_rules, rail_restore_rules = _rail_rules(rail, rail_id)
+        snap_rules.extend(rail_snap_rules)
+        restore_rules.extend(rail_restore_rules)
 
     snap_rules.sort(
         key=lambda rule: (
@@ -281,7 +284,15 @@ def _build_axis_rails(features, axis, merge_tol, eps):
             rule["span_max"],
         )
     )
-    return public_rails, snap_rules
+    restore_rules.sort(
+        key=lambda rule: (
+            rule["z"],
+            rule["rail_id"],
+            rule["span_min"],
+            rule["span_max"],
+        )
+    )
+    return public_rails, snap_rules, restore_rules
 
 
 def _serialize_rail(rail, rail_id):
@@ -303,29 +314,56 @@ def _serialize_rail(rail, rail_id):
     }
 
 
-def _rail_snap_rules(rail, rail_id):
-    """Create deduplicated snap rules for all features in one rail."""
+def _rail_rules(rail, rail_id):
+    """Create deduplicated snap and restore rules for all rail features."""
     snap_rules = []
-    seen_rules = set()
+    restore_rules = []
+    seen_snap_rules = set()
+    seen_restore_rules = set()
 
     for feature in rail["members"]:
-        rule_key = (
+        snap_rule_key = (
             feature["z"],
             round(feature["span_min"], 8),
             round(feature["span_max"], 8),
             round(feature["coord"], 8),
         )
-        if rule_key in seen_rules:
+        if snap_rule_key not in seen_snap_rules:
+            seen_snap_rules.add(snap_rule_key)
+            snap_rules.append(
+                {
+                    "kind": "snap",
+                    "axis": rail["axis"],
+                    "rail_id": rail_id,
+                    "rail_coord": float(rail["coord"]),
+                    "target_coord": float(feature["coord"]),
+                    "z": feature["z"],
+                    "z_bottom": feature["z_bottom"],
+                    "z_top": feature["z_top"],
+                    "span_min": float(feature["span_min"]),
+                    "span_max": float(feature["span_max"]),
+                    "feature_id": feature["feature_id"],
+                }
+            )
+
+        restore_rule_key = (
+            feature["z_top"],
+            round(feature["span_min"], 8),
+            round(feature["span_max"], 8),
+            round(rail["coord"], 8),
+        )
+        if restore_rule_key in seen_restore_rules:
             continue
 
-        seen_rules.add(rule_key)
-        snap_rules.append(
+        seen_restore_rules.add(restore_rule_key)
+        restore_rules.append(
             {
+                "kind": "restore",
                 "axis": rail["axis"],
                 "rail_id": rail_id,
                 "rail_coord": float(rail["coord"]),
-                "target_coord": float(feature["coord"]),
-                "z": feature["z"],
+                "target_coord": float(rail["coord"]),
+                "z": feature["z_top"],
                 "z_bottom": feature["z_bottom"],
                 "z_top": feature["z_top"],
                 "span_min": float(feature["span_min"]),
@@ -334,7 +372,7 @@ def _rail_snap_rules(rail, rail_id):
             }
         )
 
-    return snap_rules
+    return snap_rules, restore_rules
 
 
 def build_shared_rails(lines, merge_tol, eps=0.01, z_decimals=4):
@@ -362,13 +400,13 @@ def build_shared_rails(lines, merge_tol, eps=0.01, z_decimals=4):
         for feature_id, line in enumerate(horizontal_lines)
     ]
 
-    x_rails, x_snap_rules = _build_axis_rails(
+    x_rails, x_snap_rules, x_restore_rules = _build_axis_rails(
         vertical_features,
         "x",
         merge_tol,
         eps,
     )
-    y_rails, y_snap_rules = _build_axis_rails(
+    y_rails, y_snap_rules, y_restore_rules = _build_axis_rails(
         horizontal_features,
         "y",
         merge_tol,
@@ -379,7 +417,23 @@ def build_shared_rails(lines, merge_tol, eps=0.01, z_decimals=4):
     for rule in x_snap_rules + y_snap_rules:
         snap_rules_by_z[rule["z"]].append(rule)
 
-    snap_rules_by_z = {
+    restore_rules_by_z = defaultdict(list)
+    for rule in x_restore_rules + y_restore_rules:
+        restore_rules_by_z[rule["z"]].append(rule)
+
+    return {
+        "x_rails": x_rails,
+        "y_rails": y_rails,
+        "x_list": [rail["coord"] for rail in x_rails],
+        "y_list": [rail["coord"] for rail in y_rails],
+        "snap_rules_by_z": _rules_by_z(snap_rules_by_z),
+        "restore_rules_by_z": _rules_by_z(restore_rules_by_z),
+    }
+
+
+def _rules_by_z(rules_by_z):
+    """Return z-indexed rules with stable ordering inside each z bucket."""
+    return {
         z: sorted(
             rules,
             key=lambda rule: (
@@ -389,15 +443,7 @@ def build_shared_rails(lines, merge_tol, eps=0.01, z_decimals=4):
             ),
         )
         for z, rules in sorted(
-            snap_rules_by_z.items(),
+            rules_by_z.items(),
             key=lambda item: item[0],
         )
-    }
-
-    return {
-        "x_rails": x_rails,
-        "y_rails": y_rails,
-        "x_list": [rail["coord"] for rail in x_rails],
-        "y_list": [rail["coord"] for rail in y_rails],
-        "snap_rules_by_z": snap_rules_by_z,
     }

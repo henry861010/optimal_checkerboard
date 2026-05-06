@@ -22,6 +22,7 @@ class TestBuildSharedRails(unittest.TestCase):
 
         self.assertEqual(result["x_list"], [1.25])
         self.assertEqual(len(result["snap_rules_by_z"][0.0]), 2)
+        self.assertEqual(len(result["restore_rules_by_z"][0.0]), 2)
 
     def test_same_z_near_corner_vertical_lines_do_not_share_rail(self):
         """Verify near endpoints stay on separate vertical rails."""
@@ -75,6 +76,7 @@ class TestBuildSharedRails(unittest.TestCase):
 
         self.assertEqual(result["x_list"], [1.0])
         self.assertEqual(len(result["snap_rules_by_z"][0.0]), 1)
+        self.assertEqual(len(result["restore_rules_by_z"][0.0]), 1)
 
     def test_same_z_intermediate_overlap_blocks_rail_sharing(self):
         """Verify a conflicting intermediate line blocks cross-rail merging."""

@@ -40,6 +40,7 @@ class TestGetFeatureLines(unittest.TestCase):
             x_list,
             y_list,
             snap_rules_by_z,
+            restore_rules_by_z,
             rails,
         ) = _get_feature_lines(faces, element_size=1.0, return_details=True)
 
@@ -49,6 +50,7 @@ class TestGetFeatureLines(unittest.TestCase):
         self.assertEqual(len(group_lines_h), 1)
         self.assertEqual(set(rails), {"x", "y"})
         self.assertEqual(len(snap_rules_by_z[0.0]), 3)
+        self.assertEqual(len(restore_rules_by_z[0.0]), 3)
 
 
 if __name__ == "__main__":
