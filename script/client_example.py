@@ -69,20 +69,38 @@ def _example_faces():
     return [face1, face2]
 '''
 
-def _example_faces():
-    face1 = {
-        "type": "BOX",
-        "dim": [0, 0, 10, 10],
-        "bottom_z": 0,
-        "top_z": 10,
-    }
-    face2 = {
-        "type": "BOX",
-        "dim": [15, 11, 20, 20],
-        "bottom_z": 0,
-        "top_z": 10,
-    }
-    return [face1, face2]
+def _example_obj():
+    """Build an Obj hierarchy for the public OptimalMesh25D client path."""
+    from optimal_checkerboard.data_structure.face import Face
+    from optimal_checkerboard.data_structure.geometry import Obj
+    from optimal_checkerboard.data_structure.mesh import Mesh
+    from optimal_checkerboard.data_structure.metal import Metal
+
+    substrate = Obj("BOX", [0, 0, 24, 18], z=0)
+    substrate.add_layer(thk=10, material="SUBSTRATE")
+
+    substrate.metals.append(
+        Metal(
+            "NORMAL",
+            begin=2,
+            end=8,
+            material="M1",
+            ranges=[Face("BOX", [2, 2, 9, 7])],
+            holes=[Face("BOX", [13, 10, 19, 15])],
+        )
+    )
+    substrate.meshs.append(
+        Mesh(begin=0, end=10, line=[[11, 0], [11, 18]])
+    )
+    substrate.meshs.append(
+        Mesh(begin=4, end=10, face=Face("BOX", [4, 11, 9, 16]))
+    )
+
+    die = Obj("BOX", [15, 3, 22, 9], z=5)
+    die.add_layer(thk=4, material="DIE")
+    substrate.add_child(die)
+
+    return substrate
 
 def _collect_points(value, points):
     """Append every xy point found in a nested face dimension object."""
@@ -241,15 +259,17 @@ def main():
     from optimal_checkerboard import OptimalMesh25D
 
     mesher = OptimalMesh25D()
-    faces = _example_faces()
-    group_lines_v, group_lines_h, x_list, y_list = mesher.set_pattern(
-        faces,
+    obj = _example_obj()
+    group_lines_v, group_lines_h, x_list, y_list = mesher.set_pattern_obj(
+        obj,
         element_size=5,
         ratio=0.2,
     )
+    faces = mesher.faces
     mesh2d = mesher.mesh_checkerboard_box(_face_bounds(faces))
 
     print()
+    print("Obj hierarchy converted to pattern faces:", len(faces))
     print("Shared checkerboard x rails:", x_list)
     print("Shared checkerboard y rails:", y_list)
     print("Vertical rail groups:", len(group_lines_v))

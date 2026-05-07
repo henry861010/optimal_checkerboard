@@ -42,7 +42,7 @@ rail node index
 Workflow
 ========
 1. Create an :class:`OptimalMesh25D` instance.
-2. Call :meth:`OptimalMesh25D.set_pattern` with BOX, POLYGON, or LINE faces.
+2. Call :meth:`OptimalMesh25D.set_pattern_obj` with a geometry ``Obj``.
 3. Call :meth:`OptimalMesh25D.mesh_checkerboard_box` or
    :meth:`OptimalMesh25D.mesh_assignment`.
 4. During 3D drag, call :meth:`OptimalMesh25D.apply_snap_rules_at_z` whenever
@@ -51,7 +51,7 @@ Workflow
 Minimal Example
 ===============
     mesher = OptimalMesh25D()
-    mesher.set_pattern(faces, element_size=10.0, ratio=0.1)
+    mesher.set_pattern_obj(obj, element_size=10.0, ratio=0.1)
     mesh2d = mesher.mesh_checkerboard_box([xmin, ymin, xmax, ymax])
 
     z_events = sorted(
@@ -61,16 +61,21 @@ Minimal Example
         mesher.apply_snap_rules_at_z(z_value)
         # Drag the adjusted mesh2d to the next pattern z in client code.
 
-Input Face Format
-=================
+Private Raw Face Format
+=======================
+The private :meth:`OptimalMesh25D._set_pattern` helper accepts raw face
+dictionaries for tests and debug scripts.  Normal client code should prefer
+:meth:`OptimalMesh25D.set_pattern_obj`.
+
 BOX faces use a flattened rectangular bound:
 
     {"type": "BOX", "dim": [x1, y1, x2, y2],
      "bottom_z": z0, "top_z": z1}
 
-POLYGON faces use one closed orthogonal polyline:
+POLYGON faces use one or more closed orthogonal loops.  Clockwise loops are
+hulls; counter-clockwise loops are holes:
 
-    {"type": "POLYGON", "dim": [[x, y], ...],
+    {"type": "POLYGON", "dim": [[[x, y], ...], ...],
      "bottom_z": z0, "top_z": z1}
 
 LINE faces use one horizontal or vertical segment:
@@ -111,11 +116,19 @@ When changing mesh topology or node ordering, update
 """
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
+import warnings
 
 import numpy as np
 
 from optimal_checkerboard.algorithms.feature_lines import _get_feature_lines
 from optimal_checkerboard.mesh import checkerboard_mesh_box
+
+if TYPE_CHECKING:
+    from optimal_checkerboard.data_structure.geometry import Obj
+
+
+_PATTERN_FACE_TYPES = {"BOX", "LINE", "POLYGON"}
 
 
 @dataclass
@@ -174,12 +187,14 @@ class OptimalMesh25D:
         self.x_pattern_nodes = None
         self.y_pattern_nodes = None
 
-    def set_pattern(self, faces, element_size, ratio=0.1):
-        """Extract shared rails plus snap and restore rules from faces.
+    def _set_pattern(self, faces, element_size, ratio=0.1):
+        """Extract shared rails plus snap and restore rules from raw faces.
 
         Args:
             faces: BOX, POLYGON, or LINE face dictionaries.  See the module
-                docstring for accepted formats.
+                docstring for accepted formats.  This raw schema is intended
+                for tests and debug scripts; client code should use
+                :meth:`set_pattern_obj`.
             element_size: Preferred checkerboard element size.  This value is
                 also used with ``ratio`` to derive the rail merge tolerance.
             ratio: Fraction of ``element_size`` used as the merge tolerance for
@@ -209,6 +224,112 @@ class OptimalMesh25D:
         self.reset_snap_state()
 
         return self.group_lines_v, self.group_lines_h, self.x_list, self.y_list
+
+    def set_pattern_obj(self, obj: "Obj", element_size, ratio=0.1):
+        """Extract pattern faces from an ``Obj`` hierarchy.
+
+        The conversion uses object, metal range/hole, mesh-line, mesh-face, and
+        child-object boundaries as pattern faces.  Metals without explicit
+        ranges or holes do not add new pattern faces because they inherit their
+        parent object's footprint.  CYLINDER faces are ignored with a warning
+        because the pattern mesher only consumes orthogonal edges.
+        """
+        obj.set_position_abs(0, 0, 0)
+        faces = self._pattern_faces_from_obj(obj)
+        return self._set_pattern(faces, element_size=element_size, ratio=ratio)
+
+    def _pattern_faces_from_obj(self, obj: "Obj"):
+        """Return raw pattern face dictionaries from one absolute ``Obj`` tree."""
+        faces = []
+
+        self._append_pattern_face(
+            faces,
+            obj.face.type,
+            obj.face.dim_abs,
+            obj.z_abs,
+            None if obj.z_abs is None else obj.z_abs + obj.thk,
+        )
+
+        for metal in obj.metals:
+            for face_range in metal.ranges + metal.holes:
+                self._append_pattern_face(
+                    faces,
+                    face_range.type,
+                    face_range.dim_abs,
+                    metal.begin_abs,
+                    metal.end_abs,
+                )
+
+        for mesh in obj.meshs:
+            if mesh.line is not None:
+                self._append_pattern_face(
+                    faces,
+                    "LINE",
+                    self._mesh_line_dim(mesh),
+                    mesh.begin_abs,
+                    mesh.end_abs,
+                )
+            if mesh.face is not None:
+                self._append_pattern_face(
+                    faces,
+                    mesh.face.type,
+                    mesh.face.dim_abs,
+                    mesh.begin_abs,
+                    mesh.end_abs,
+                )
+
+        for child_obj in obj.child_objs:
+            faces.extend(self._pattern_faces_from_obj(child_obj))
+
+        return faces
+
+    def _append_pattern_face(self, faces, face_type, dim, bottom_z, top_z):
+        """Append one validated raw pattern face dictionary."""
+        if face_type == "CYLINDER":
+            warnings.warn(
+                "CYLINDER faces are ignored during pattern conversion",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            return
+
+        if face_type not in _PATTERN_FACE_TYPES:
+            raise ValueError(
+                "Unsupported Obj face type for pattern conversion: "
+                f"{face_type}. Supported types are BOX, LINE, and POLYGON."
+            )
+        if dim is None:
+            raise ValueError(
+                f"{face_type} face has no absolute coordinates. "
+                "Call set_position_abs before pattern conversion."
+            )
+        if bottom_z is None or top_z is None:
+            raise ValueError(
+                f"{face_type} face has no absolute z interval. "
+                "Call set_position_abs before pattern conversion."
+            )
+
+        faces.append(
+            {
+                "type": face_type,
+                "dim": dim,
+                "bottom_z": bottom_z,
+                "top_z": top_z,
+            }
+        )
+
+    def _mesh_line_dim(self, mesh):
+        """Return mesh line absolute coordinates as [x1, y1, x2, y2]."""
+        if mesh.line_abs is None or len(mesh.line_abs) != 2:
+            raise ValueError(
+                "Mesh line has no valid absolute coordinates. "
+                "Call set_position_abs before pattern conversion."
+            )
+
+        point1, point2 = mesh.line_abs
+        if len(point1) < 2 or len(point2) < 2:
+            raise ValueError("Mesh line points must contain x and y")
+        return [point1[0], point1[1], point2[0], point2[1]]
 
     def mesh_checkerboard_box(self, dim=None):
         """Generate a 2D checkerboard mesh from shared rails.
@@ -524,7 +645,8 @@ class OptimalMesh25D:
             or self.element_size is None
         ):
             raise RuntimeError(
-                "Error: OptimalMesh25D.set_pattern is not performed"
+                "Error: OptimalMesh25D.set_pattern_obj or _set_pattern is "
+                "not performed"
             )
 
     def _mesh_lists_with_bounds(self, dim):

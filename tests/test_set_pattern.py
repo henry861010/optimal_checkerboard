@@ -8,6 +8,10 @@ SRC_ROOT = os.path.abspath(
 sys.path.insert(0, SRC_ROOT)
 
 from optimal_checkerboard import OptimalMesh25D
+from optimal_checkerboard.data_structure.face import Face
+from optimal_checkerboard.data_structure.geometry import Obj
+from optimal_checkerboard.data_structure.mesh import Mesh
+from optimal_checkerboard.data_structure.metal import Metal
 
 
 class TestSetPattern(unittest.TestCase):
@@ -29,7 +33,7 @@ class TestSetPattern(unittest.TestCase):
         ]
 
         mesher = OptimalMesh25D()
-        group_lines_v, group_lines_h, x_list, y_list = mesher.set_pattern(
+        group_lines_v, group_lines_h, x_list, y_list = mesher._set_pattern(
             faces,
             element_size=10,
             ratio=0.1,
@@ -52,7 +56,7 @@ class TestSetPattern(unittest.TestCase):
 
         mesher = OptimalMesh25D()
         with self.assertRaisesRegex(ValueError, "bottom_z and top_z"):
-            mesher.set_pattern(faces, element_size=10, ratio=0.1)
+            mesher._set_pattern(faces, element_size=10, ratio=0.1)
 
     def test_line_faces_reject_bad_z_range(self):
         """Verify face z intervals must be ordered."""
@@ -67,10 +71,10 @@ class TestSetPattern(unittest.TestCase):
 
         mesher = OptimalMesh25D()
         with self.assertRaisesRegex(ValueError, "z_bottom <= z_top"):
-            mesher.set_pattern(faces, element_size=10, ratio=0.1)
+            mesher._set_pattern(faces, element_size=10, ratio=0.1)
 
-    def test_set_pattern_accepts_new_2d_face_schema(self):
-        """Verify set_pattern accepts flat 2D dims with bottom/top z."""
+    def test_private_set_pattern_accepts_new_2d_face_schema(self):
+        """Verify _set_pattern accepts flat 2D dims with bottom/top z."""
         faces = [
             {
                 "type": "BOX",
@@ -80,7 +84,7 @@ class TestSetPattern(unittest.TestCase):
             },
             {
                 "type": "POLYGON",
-                "dim": [[10, 10], [90, 10], [90, 90], [10, 90]],
+                "dim": [[[10, 10], [10, 90], [90, 90], [90, 10]]],
                 "bottom_z": 10,
                 "top_z": 90,
             },
@@ -93,7 +97,7 @@ class TestSetPattern(unittest.TestCase):
         ]
 
         mesher = OptimalMesh25D()
-        _, _, x_list, y_list = mesher.set_pattern(
+        _, _, x_list, y_list = mesher._set_pattern(
             faces,
             element_size=100,
             ratio=0.1,
@@ -105,6 +109,64 @@ class TestSetPattern(unittest.TestCase):
         self.assertIn(10.0, y_list)
         self.assertIn(50.0, y_list)
         self.assertEqual(mesher.get_snap_rules(10)[0]["z_top"], 90)
+
+    def test_set_pattern_obj_collects_obj_metal_mesh_and_child_faces(self):
+        """Verify Obj conversion covers all pattern-bearing structures."""
+        obj = Obj("BOX", [0, 0, 10, 10], z=1)
+        obj.add_layer(thk=4, material="BASE")
+        obj.metals.append(
+            Metal(
+                "NORMAL",
+                begin=1,
+                end=3,
+                material="M1",
+                ranges=[Face("BOX", [2, 2, 4, 4])],
+                holes=[Face("BOX", [6, 6, 8, 8])],
+            )
+        )
+        obj.meshs.append(Mesh(begin=0, end=4, line=[[5, 0], [5, 10]]))
+        obj.meshs.append(Mesh(begin=2, end=4, face=Face("BOX", [1, 1, 3, 3])))
+
+        child = Obj("BOX", [20, 0, 25, 5], z=2)
+        child.add_layer(thk=2, material="CHILD")
+        obj.add_child(child)
+
+        mesher = OptimalMesh25D()
+        mesher.set_pattern_obj(obj, element_size=10, ratio=0.1)
+
+        self.assertIn(5.0, mesher.x_list)
+        self.assertIn(20.0, mesher.x_list)
+        self.assertIn(25.0, mesher.x_list)
+        self.assertIn(6.0, mesher.y_list)
+        self.assertIn(8.0, mesher.y_list)
+        self.assertIn(2.0, mesher.get_snap_rules())
+        self.assertIn(3.0, mesher.get_snap_rules())
+
+    def test_set_pattern_obj_ignores_metal_without_ranges_or_holes(self):
+        """Verify inherited metal footprint does not duplicate parent faces."""
+        obj = Obj("BOX", [0, 0, 10, 10], z=0)
+        obj.add_layer(thk=10, material="BASE")
+        obj.metals.append(
+            Metal("NORMAL", begin=2, end=8, material="M1")
+        )
+
+        mesher = OptimalMesh25D()
+        mesher.set_pattern_obj(obj, element_size=10, ratio=0.1)
+
+        self.assertEqual(sorted(mesher.get_snap_rules()), [0.0])
+
+    def test_set_pattern_obj_warns_and_ignores_cylinder_faces(self):
+        """Verify CYLINDER geometry does not enter the pattern mesher."""
+        obj = Obj("CYLINDER", [0, 0, 1], z=0)
+        obj.add_layer(thk=1, material="BASE")
+
+        mesher = OptimalMesh25D()
+        with self.assertWarnsRegex(RuntimeWarning, "CYLINDER"):
+            mesher.set_pattern_obj(obj, element_size=10, ratio=0.1)
+
+        self.assertEqual(mesher.x_list, [])
+        self.assertEqual(mesher.y_list, [])
+        self.assertEqual(mesher.get_snap_rules(), {})
 
 
 if __name__ == "__main__":

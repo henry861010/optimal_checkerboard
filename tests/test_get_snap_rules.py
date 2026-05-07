@@ -32,7 +32,7 @@ class TestGetSnapRules(unittest.TestCase):
         ]
 
         mesher = OptimalMesh25D()
-        mesher.set_pattern(faces, element_size=10, ratio=0.1)
+        mesher._set_pattern(faces, element_size=10, ratio=0.1)
 
         self.assertEqual(
             mesher.get_snap_rules(2.0000005),
@@ -52,7 +52,7 @@ class TestGetSnapRules(unittest.TestCase):
         ]
 
         mesher = OptimalMesh25D()
-        mesher.set_pattern(faces, element_size=10, ratio=0.1)
+        mesher._set_pattern(faces, element_size=10, ratio=0.1)
 
         self.assertEqual(
             mesher.get_restore_rules(8.0000005),

@@ -1,5 +1,6 @@
 """Extract pattern feature lines and shared rail metadata from faces."""
 
+from optimal_checkerboard.algorithms.polygon import normalize_polygon_loops
 from optimal_checkerboard.algorithms.rail_builder import build_shared_rails
 
 
@@ -107,27 +108,13 @@ def _line_to_pattern_line(line, z_range=None):
 
 
 def _polygon_loops(dim):
-    """Return polygon loops from flat or nested POLYGON dim input."""
-    if not dim:
-        raise ValueError("POLYGON dim must contain at least one point")
-    if _is_point(dim[0]):
-        return [dim]
-    raise ValueError("POLYGON dim must be [[x1,y1], [x2,y2], ...]")
+    """Return POLYGON loops from canonical nested dim input."""
+    return [loop["points"] for loop in normalize_polygon_loops(dim)]
 
 
 def _is_flat_line_dim(dim):
     """Return whether dim is [x1, y1, x2, y2]."""
     return len(dim) == 4 and all(not _is_sequence(value) for value in dim)
-
-
-def _is_point(value):
-    """Return whether value looks like one xy or xyz point."""
-    return (
-        _is_sequence(value)
-        and len(value) >= 2
-        and not _is_sequence(value[0])
-        and not _is_sequence(value[1])
-    )
 
 
 def _is_sequence(value):

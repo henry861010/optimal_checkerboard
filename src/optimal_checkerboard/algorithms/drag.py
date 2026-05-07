@@ -1,5 +1,8 @@
-import numpy as np
 import time
+import numpy as np
+from matplotlib.path import Path
+
+from optimal_checkerboard.algorithms.polygon import normalize_polygon_loops
 
 '''
     OBJECTIVE: 
@@ -9,8 +12,75 @@ import time
 ELEMENT_LEN = 8
 NODE_LEN = 3
 
-import numpy as np
-from matplotlib.path import Path
+
+def _search_polygon_element(x4, y4, dim, eps=0.0):
+    loops = normalize_polygon_loops(dim)
+    points = np.stack((x4, y4), axis=-1).reshape(-1, 2)
+
+    inside_hull = np.zeros(len(points), dtype=bool)
+    inside_hole = np.zeros(len(points), dtype=bool)
+    for loop in loops:
+        loop_mask = _points_in_loop_inclusive(points, loop["points"], eps=eps)
+        if loop["role"] == "hull":
+            inside_hull |= loop_mask
+        else:
+            inside_hole |= loop_mask
+
+    point_mask = inside_hull & ~inside_hole
+    return point_mask.reshape(len(x4), 4).all(axis=1)
+
+
+def _points_in_loop_inclusive(points, loop, eps=0.0):
+    vertices = np.asarray(loop, dtype=float)
+    path_mask = Path(vertices).contains_points(points)
+    boundary_mask = _points_on_loop_boundary(points, vertices, eps=eps)
+    return path_mask | boundary_mask
+
+
+def _points_on_loop_boundary(points, vertices, eps=0.0, chunk_size=65536):
+    if len(points) == 0:
+        return np.zeros(0, dtype=bool)
+
+    tol = _polygon_boundary_tolerance(points, vertices, eps)
+    x1 = vertices[:, 0]
+    y1 = vertices[:, 1]
+    x2 = np.roll(x1, -1)
+    y2 = np.roll(y1, -1)
+    dx = x2 - x1
+    dy = y2 - y1
+    cross_tol = tol * np.maximum(np.maximum(np.abs(dx), np.abs(dy)), 1.0)
+
+    result = np.zeros(len(points), dtype=bool)
+    for start in range(0, len(points), chunk_size):
+        end = min(start + chunk_size, len(points))
+        chunk = points[start:end]
+        x = chunk[:, 0:1]
+        y = chunk[:, 1:2]
+        cross = (x - x1) * dy - (y - y1) * dx
+        within_x = (x >= np.minimum(x1, x2) - tol) & (
+            x <= np.maximum(x1, x2) + tol
+        )
+        within_y = (y >= np.minimum(y1, y2) - tol) & (
+            y <= np.maximum(y1, y2) + tol
+        )
+        result[start:end] = np.any(
+            (np.abs(cross) <= cross_tol) & within_x & within_y,
+            axis=1,
+        )
+    return result
+
+
+def _polygon_boundary_tolerance(points, vertices, eps):
+    if eps:
+        return float(eps)
+
+    scale = max(
+        float(np.max(np.abs(points))) if len(points) else 0.0,
+        float(np.max(np.abs(vertices))) if len(vertices) else 0.0,
+        1.0,
+    )
+    return 1e-12 * scale
+
 
 def search_face_element(element_coordinates, type, dim, index=None, eps=0.0, returnMask=False):
     """
@@ -49,22 +119,7 @@ def search_face_element(element_coordinates, type, dim, index=None, eps=0.0, ret
         res_mask = np.all(dist <= rr, axis=1)
     
     elif type == "POLYGON":
-        radiu = -1e-12
-        path = Path(np.asarray(dim, float))
-        element_coordinates = element_coordinates[rows]
-        
-        node1_list = element_coordinates[:, [0, 1]]
-        mask1 = path.contains_points(node1_list, radius=radiu)
-
-        node2_list = element_coordinates[:, [2, 3]]
-        mask2 = path.contains_points(node2_list, radius=radiu)
-        
-        node3_list = element_coordinates[:, [4, 5]]
-        mask3 = path.contains_points(node3_list, radius=radiu)
-        
-        node4_list = element_coordinates[:, [6, 7]]
-        mask4 = path.contains_points(node4_list, radius=radiu)
-        res_mask = mask1 & mask2 & mask3 & mask4
+        res_mask = _search_polygon_element(x4, y4, dim, eps=eps)
     else:
         raise ValueError(f"Unsupported type: {type}")
     

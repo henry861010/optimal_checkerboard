@@ -13,7 +13,9 @@
 在整個 mesher 流程裡，它位於前處理階段：
 
 ```text
-OptimalMesh25D.set_pattern()
+OptimalMesh25D.set_pattern_obj()
+  -> _pattern_faces_from_obj()
+  -> _set_pattern()
   -> _get_feature_lines()
       -> _extract_lines()
           -> _box_to_lines()
@@ -40,14 +42,19 @@ OptimalMesh25D.apply_snap_rules_at_z(z)
 
 ## 對外呼叫入口
 
-主要入口在 `OptimalMesh25D.set_pattern()`：
+正式 client 入口在 `OptimalMesh25D.set_pattern_obj()`；它會先把 `Obj`
+hierarchy 轉成 raw face dictionaries，再交給 debug/private 入口
+`OptimalMesh25D._set_pattern()`：
 
 ```python
 merge_tol = ratio * element_size
 _get_feature_lines(faces, merge_tol, return_details=True)
 ```
 
-這裡要注意命名：`_get_feature_lines(faces, element_size, ...)` 的第二個參數在 function docstring 裡叫 `element_size`，但 `set_pattern()` 實際傳入的是 `merge_tol`。也就是說，在目前程式裡 `_get_feature_lines()` 收到的值代表「允許合併 shared rail 的最大座標距離」，不是原始 mesh element size。
+`Obj` 裡的 `CYLINDER` face 不會進入這個流程；conversion 階段會發出
+warning 並略過，因為 shared-rail pattern 目前只支援 orthogonal edge。
+
+這裡要注意命名：`_get_feature_lines(faces, element_size, ...)` 的第二個參數在 function docstring 裡叫 `element_size`，但 `_set_pattern()` 實際傳入的是 `merge_tol`。也就是說，在目前程式裡 `_get_feature_lines()` 收到的值代表「允許合併 shared rail 的最大座標距離」，不是原始 mesh element size。
 
 ## 輸入資料格式
 
@@ -98,16 +105,21 @@ _get_feature_lines(faces, merge_tol, return_details=True)
 
 ### POLYGON
 
+`dim` 是一個或多個封閉 orthogonal polygon loop 的 list：
+
 ```python
 {
     "type": "POLYGON",
-    "dim": [[x0, y0], [x1, y1], ...],
+    "dim": [
+        [[x0, y0], [x1, y1], ...],  # clockwise hull
+        [[x0, y0], [x1, y1], ...],  # counter-clockwise hole
+    ],
     "bottom_z": z0,
     "top_z": z1,
 }
 ```
 
-`dim` 是一個封閉 orthogonal polygon 的 point list。程式用 `[poly[i - 1], point]` 建立邊，所以第一個點會自動連回最後一個點。
+每個 loop 會用 Cartesian xy 座標的 signed area 判斷方向：順時針表示 hull，逆時針表示 hole。程式用 `[poly[i - 1], point]` 建立邊，所以第一個點會自動連回最後一個點。
 
 ## 第一階段：抽線段
 
@@ -1321,7 +1333,7 @@ snap_rules_by_z = {
 
 ## 後續如何被 mesher 使用
 
-`OptimalMesh25D.set_pattern()` 會把 `_get_feature_lines(..., return_details=True)` 的結果存到物件狀態：
+`OptimalMesh25D._set_pattern()` 會把 `_get_feature_lines(..., return_details=True)` 的結果存到物件狀態：
 
 ```python
 self.group_lines_v = group_lines_v

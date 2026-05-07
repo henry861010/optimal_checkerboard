@@ -25,7 +25,7 @@ class TestApplySnapRulesAtZ(unittest.TestCase):
         ]
 
         mesher = OptimalMesh25D()
-        mesher.set_pattern(faces, element_size=10, ratio=0.1)
+        mesher._set_pattern(faces, element_size=10, ratio=0.1)
 
         with self.assertRaisesRegex(RuntimeError, "mesh_checkerboard_box"):
             mesher.apply_snap_rules_at_z(0)
@@ -60,7 +60,7 @@ class TestApplySnapRulesAtZ(unittest.TestCase):
         ]
 
         mesher = OptimalMesh25D()
-        mesher.set_pattern(faces, element_size=10, ratio=0.1)
+        mesher._set_pattern(faces, element_size=10, ratio=0.1)
         mesh = mesher.mesh_checkerboard_box([0, 0, 3, 20])
 
         touched = mesher.apply_snap_rules_at_z(0)
@@ -88,7 +88,7 @@ class TestApplySnapRulesAtZ(unittest.TestCase):
         ]
 
         mesher = OptimalMesh25D()
-        mesher.set_pattern(faces, element_size=5, ratio=0.2)
+        mesher._set_pattern(faces, element_size=5, ratio=0.2)
         mesh = mesher.mesh_checkerboard_box([0, 0, 3, 25])
         before = mesh.nodes.copy()
 
@@ -137,7 +137,7 @@ class TestApplySnapRulesAtZ(unittest.TestCase):
         ]
 
         mesher = OptimalMesh25D()
-        mesher.set_pattern(faces, element_size=5, ratio=0.2)
+        mesher._set_pattern(faces, element_size=5, ratio=0.2)
         mesh = mesher.mesh_checkerboard_box([0, 0, 3, 25])
         before = mesh.nodes.copy()
 
@@ -187,7 +187,7 @@ class TestApplySnapRulesAtZ(unittest.TestCase):
         ]
 
         mesher = OptimalMesh25D()
-        mesher.set_pattern(faces, element_size=5, ratio=0.2)
+        mesher._set_pattern(faces, element_size=5, ratio=0.2)
         mesh = mesher.mesh_checkerboard_box([0, 0, 3, 5])
         before = mesh.nodes.copy()
         shared_span = (
@@ -220,7 +220,7 @@ class TestApplySnapRulesAtZ(unittest.TestCase):
         ]
 
         mesher = OptimalMesh25D()
-        mesher.set_pattern(faces, element_size=11.0, ratio=0.2)
+        mesher._set_pattern(faces, element_size=11.0, ratio=0.2)
         mesh = mesher.mesh_checkerboard_box([-1, -1, 11, 11])
 
         mesher.apply_snap_rules_at_z(0)
@@ -250,7 +250,7 @@ class TestApplySnapRulesAtZ(unittest.TestCase):
         ]
 
         mesher = OptimalMesh25D()
-        mesher.set_pattern(faces, element_size=10, ratio=0.1)
+        mesher._set_pattern(faces, element_size=10, ratio=0.1)
         mesher.mesh_checkerboard_box([0, 0, 3, 10])
 
         with self.assertRaisesRegex(ValueError, "shape"):

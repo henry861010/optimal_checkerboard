@@ -37,7 +37,7 @@ class TestMeshAssignment(unittest.TestCase):
         )
 
         mesher = OptimalMesh25D()
-        mesher.set_pattern(faces, element_size=10, ratio=0.1)
+        mesher._set_pattern(faces, element_size=10, ratio=0.1)
         assigned = mesher.mesh_assignment(mesh2d)
 
         self.assertIs(assigned, mesh2d)
@@ -70,7 +70,7 @@ class TestMeshAssignment(unittest.TestCase):
         )
 
         mesher = OptimalMesh25D()
-        mesher.set_pattern(faces, element_size=10, ratio=0.1)
+        mesher._set_pattern(faces, element_size=10, ratio=0.1)
 
         with self.assertRaisesRegex(ValueError, "outside mesh2d.nodes"):
             mesher.mesh_assignment(mesh2d)
@@ -91,7 +91,7 @@ class TestMeshAssignment(unittest.TestCase):
         )
 
         mesher = OptimalMesh25D()
-        mesher.set_pattern(faces, element_size=10, ratio=0.1)
+        mesher._set_pattern(faces, element_size=10, ratio=0.1)
 
         with self.assertRaisesRegex(ValueError, "mesh2d.nodes"):
             mesher.mesh_assignment(mesh2d)

@@ -14,7 +14,7 @@ from optimal_checkerboard import OptimalMesh25D
 
 class TestMeshCheckerboardBox(unittest.TestCase):
     def test_mesh_checkerboard_box_requires_pattern(self):
-        """Verify mesh generation requires set_pattern first."""
+        """Verify mesh generation requires pattern preprocessing first."""
         mesher = OptimalMesh25D()
 
         with self.assertRaisesRegex(RuntimeError, "set_pattern"):
@@ -32,7 +32,7 @@ class TestMeshCheckerboardBox(unittest.TestCase):
         ]
 
         mesher = OptimalMesh25D()
-        mesher.set_pattern(faces, element_size=10, ratio=0.1)
+        mesher._set_pattern(faces, element_size=10, ratio=0.1)
 
         with self.assertRaisesRegex(ValueError, "dim must be"):
             mesher.mesh_checkerboard_box([0, 0, 10])
@@ -49,7 +49,7 @@ class TestMeshCheckerboardBox(unittest.TestCase):
         ]
 
         mesher = OptimalMesh25D()
-        mesher.set_pattern(faces, element_size=10, ratio=0.1)
+        mesher._set_pattern(faces, element_size=10, ratio=0.1)
         mesh = mesher.mesh_checkerboard_box([0, 0, 10, 10])
 
         self.assertFalse(hasattr(mesh, "element_internal"))

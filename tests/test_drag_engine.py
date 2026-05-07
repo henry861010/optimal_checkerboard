@@ -9,7 +9,7 @@ sys.path.insert(0, SRC_ROOT)
 
 import numpy as np
 
-from optimal_checkerboard.algorithms.drag import Engin25D
+from optimal_checkerboard.algorithms.drag import Engin25D, search_face_element
 
 
 class SimpleMesh2D:
@@ -35,6 +35,26 @@ class SimpleMesh2D:
 
 
 class TestDragEngine(unittest.TestCase):
+    def test_search_polygon_uses_winding_hulls_holes_and_inclusive_boundary(self):
+        elements = np.asarray(
+            [
+                [0, 0, 1, 0, 1, 1, 0, 1],
+                [2, 2, 3, 2, 3, 3, 2, 3],
+                [10, 0, 11, 0, 11, 1, 10, 1],
+                [20, 0, 21, 0, 21, 1, 20, 1],
+            ],
+            dtype=np.float64,
+        )
+        dim = [
+            [[0, 0], [0, 5], [5, 5], [5, 0]],
+            [[2, 2], [3, 2], [3, 3], [2, 3]],
+            [[10, 0], [10, 5], [15, 5], [15, 0]],
+        ]
+
+        hits = search_face_element(elements, "POLYGON", dim)
+
+        np.testing.assert_array_equal(hits, [0, 2])
+
     def test_set_2d_uses_split_element_arrays(self):
         mesh = SimpleMesh2D()
         engine = Engin25D()

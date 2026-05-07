@@ -256,7 +256,7 @@ engin25D_obj._drag(5,10,20)
 
 area4 = {
     "type": "POLYGON",
-    "dim": [[20,60], [40,60], [40,80], [60,80], [90,10]],
+    "dim": [[[20,60], [40,60], [40,80], [60,80], [90,10]]],
     "material": "comp4"
 }
 engin25D_obj._organize(area4)
@@ -266,7 +266,7 @@ area4 = {
     "material": "EMPTY",
     "holes": [{
         "type": "POLYGON",
-        "dim": [[20,60], [40,60], [40,80], [60,80], [90,10]],
+        "dim": [[[20,60], [40,60], [40,80], [60,80], [90,10]]],
     }]
 }
 engin25D_obj._organize(area4)
@@ -281,4 +281,3 @@ comps = engin25D_obj.comps
 
 vision_obj.set(comps, elements, element_comps, nodes)
 vision_obj.show()
-        
