@@ -34,6 +34,8 @@ def _example_faces():
     }
     return [face1, face2, face3]
 '''
+
+'''
 def _example_faces():
     face1 = {
         "type": "BOX",
@@ -48,7 +50,39 @@ def _example_faces():
         "top_z": 20,
     }
     return [face1, face2]
+'''
 
+'''
+def _example_faces():
+    face1 = {
+        "type": "BOX",
+        "dim": [0, 0, 10, 10],
+        "bottom_z": 0,
+        "top_z": 20,
+    }
+    face2 = {
+        "type": "BOX",
+        "dim": [2, 0.5, 8, 5],
+        "bottom_z": 5,
+        "top_z": 15,
+    }
+    return [face1, face2]
+'''
+
+def _example_faces():
+    face1 = {
+        "type": "BOX",
+        "dim": [0, 0, 10, 10],
+        "bottom_z": 0,
+        "top_z": 10,
+    }
+    face2 = {
+        "type": "BOX",
+        "dim": [15, 11, 20, 20],
+        "bottom_z": 0,
+        "top_z": 10,
+    }
+    return [face1, face2]
 
 def _collect_points(value, points):
     """Append every xy point found in a nested face dimension object."""
@@ -210,8 +244,8 @@ def main():
     faces = _example_faces()
     group_lines_v, group_lines_h, x_list, y_list = mesher.set_pattern(
         faces,
-        element_size=1,
-        ratio=1,
+        element_size=5,
+        ratio=0.2,
     )
     mesh2d = mesher.mesh_checkerboard_box(_face_bounds(faces))
 

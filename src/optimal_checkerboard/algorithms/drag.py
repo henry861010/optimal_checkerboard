@@ -355,6 +355,7 @@ class Engin25D:
         ### target element index
         elem2D_idx = np.flatnonzero(self.element_2D_comp != 0)
         if elem2D_idx.size == 0:
+            self.node_2D_to_3D[:] = -1
             return 0
 
         # unique 2D node ids used by those elements
