@@ -57,26 +57,27 @@ class Metal:
         metal_dup.end_abs = self.end_abs
         return metal_dup
 
-    def dict(self):
-        return {
-            "type": self.type,
-            "begin": self.begin,
-            "begin_abs": self.begin_abs,
-            "end": self.end,
-            "end_abs": self.end_abs,
-            "material_o": self.material_o,
-            "material": self.material,
-            "ranges": [face_range.dict() for face_range in self.ranges],
-            "holes": [hole.dict() for hole in self.holes],
-        }
+    def info(self, isAbs=False):
+        if isAbe:
+            return {
+                "type": self.type,
+                "begin": self.begin_abs,
+                "end": self.end_abs,
+                "material_o": self.material_o,
+                "material": self.material,
+                "ranges": [face_range.info(isAbs=True) for face_range in self.ranges],
+                "holes": [hole.info(isAbs=True) for hole in self.holes],
+            }
+        else:
+            return {
+                "type": self.type,
+                "begin": self.begin,
+                "begin_abs": self.begin_abs,
+                "end": self.end,
+                "end_abs": self.end_abs,
+                "material_o": self.material_o,
+                "material": self.material,
+                "ranges": [face_range.info() for face_range in self.ranges],
+                "holes": [hole.info() for hole in self.holes],
+            }
 
-    def dict_abs(self):
-        return {
-            "type": self.type,
-            "begin": self.begin_abs,
-            "end": self.end_abs,
-            "material_o": self.material_o,
-            "material": self.material,
-            "ranges": [face_range.dict_abs() for face_range in self.ranges],
-            "holes": [hole.dict_abs() for hole in self.holes],
-        }

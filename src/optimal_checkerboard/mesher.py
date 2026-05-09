@@ -122,6 +122,7 @@ import warnings
 import numpy as np
 
 from optimal_checkerboard.algorithms.feature_lines import _get_feature_lines
+from optimal_checkerboard.algorithms.drag import Dragger
 from optimal_checkerboard.mesh import checkerboard_mesh_box
 
 if TYPE_CHECKING:
@@ -184,6 +185,7 @@ class OptimalMesh25D:
         self.node_axis_rail_ids = None
 
         self.mesh2d = None
+        self.dragger = None
         self.x_pattern_nodes = None
         self.y_pattern_nodes = None
 
@@ -433,7 +435,13 @@ class OptimalMesh25D:
                 return z_key, rules
         return None, []
 
-    def apply_snap_rules_at_z(self, z, nodes=None, eps=1e-6):
+    def apply_snap_rules_at_z(
+        self,
+        z,
+        nodes=None,
+        eps=1e-6,
+        return_touched_node_ids=False,
+    ):
         """Move rail nodes to true pattern coordinates.
 
         Args:
@@ -442,9 +450,13 @@ class OptimalMesh25D:
             nodes: Optional ``(n, 2+)`` node array to mutate. If omitted,
                 mutates ``self.mesh2d.nodes``.
             eps: Tolerance used for z matching and span selection.
+            return_touched_node_ids: If true, also return unique node ids that
+                were touched by the snap operation.
 
         Returns:
-            Number of mesh nodes touched by all applied rules.
+            Number of mesh nodes touched by all applied rules, or a tuple of
+            ``(touched_count, touched_node_ids)`` when
+            ``return_touched_node_ids`` is true.
 
         Notes:
             This method intentionally mutates node coordinates in place.  The
@@ -473,40 +485,51 @@ class OptimalMesh25D:
             nodes,
             restore_rules + snap_rules,
             eps=eps,
+            return_touched_node_ids=return_touched_node_ids,
         )
         self._stage_restore_rules_at_z(z, eps=eps)
         return touched
 
-    def _apply_snap_rule_batch(self, nodes, rules, eps=1e-6):
+    def _apply_snap_rule_batch(
+        self,
+        nodes,
+        rules,
+        eps=1e-6,
+        return_touched_node_ids=False,
+    ):
         """Apply same-z restore and snap rules as one atomic update."""
         if not rules:
+            if return_touched_node_ids:
+                return 0, np.empty(0, dtype=np.intp)
             return 0
 
         rules_by_axis = self._rules_by_axis_and_rail(rules)
-        target_values = {
-            "x": np.zeros(len(nodes), dtype=np.float64),
-            "y": np.zeros(len(nodes), dtype=np.float64),
-        }
-        target_masks = {
-            "x": np.zeros(len(nodes), dtype=bool),
-            "y": np.zeros(len(nodes), dtype=bool),
-        }
-
+        updates = []
+        touched_node_chunks = []
         touched = 0
+
         for rule in rules:
             node_ids = self._snap_rule_node_ids(
                 rule,
                 rules_by_axis,
                 eps=eps,
             )
-            axis = rule["axis"]
-            target_values[axis][node_ids] = rule["target_coord"]
-            target_masks[axis][node_ids] = True
+            coord_axis = 0 if rule["axis"] == "x" else 1
+            updates.append((node_ids, coord_axis, rule["target_coord"]))
             touched += int(len(node_ids))
 
-        for axis, coord_axis in (("x", 0), ("y", 1)):
-            mask = target_masks[axis]
-            nodes[mask, coord_axis] = target_values[axis][mask]
+            if return_touched_node_ids and len(node_ids):
+                touched_node_chunks.append(node_ids)
+
+        for node_ids, coord_axis, target_coord in updates:
+            nodes[node_ids, coord_axis] = target_coord
+
+        if return_touched_node_ids:
+            if touched_node_chunks:
+                touched_node_ids = np.unique(np.concatenate(touched_node_chunks))
+            else:
+                touched_node_ids = np.empty(0, dtype=np.intp)
+            return touched, touched_node_ids
         return touched
 
     def _consume_restore_rule_buffer(self, z, eps=1e-6):
@@ -791,3 +814,82 @@ class OptimalMesh25D:
             )
 
         return rail_indices
+
+    def build(self, obj_list, preserve_mesh2d=False):
+        """Build a 3D mesh by snapping the 2D rails and dragging each layer.
+
+        Args:
+            obj_list: Dragger-compatible object stack data. Each object is a
+                list of z layers; every layer except the final sentinel must
+                provide ``areas`` and ``element_size``.
+            preserve_mesh2d: If true, copy the 2D node coordinates once before
+                dragging. The default is zero-copy and mutates
+                ``self.mesh2d.nodes`` in place as snap rules are applied.
+
+        Returns:
+            The populated :class:`Dragger` instance.
+        """
+        self._check_mesh_ready()
+        nodes, elements = self._validate_mesh2d_arrays()
+
+        mesh2d = self.mesh2d
+        if preserve_mesh2d:
+            mesh2d = Mesh2D(nodes=nodes.copy(), elements=elements)
+
+        dragger_obj = Dragger()
+        dragger_obj.set_2D(mesh2d)
+
+        for obj in obj_list:
+            if len(obj) < 2:
+                continue
+
+            self.reset_snap_state()
+            dragger_obj._organize_empty()
+
+            for layer_index, layer in enumerate(obj[:-1]):
+                z_begin = obj[layer_index]["z"]
+                z_end = obj[layer_index + 1]["z"]
+                touched, touched_node_ids = self.apply_snap_rules_at_z(
+                    z_begin,
+                    nodes=dragger_obj.node_2D,
+                    return_touched_node_ids=True,
+                )
+
+                if touched:
+                    self._sync_dragger_current_layer_xy(
+                        dragger_obj,
+                        touched_node_ids,
+                    )
+                    dragger_obj._cal_volumns()
+
+                dragger_obj._organize(layer["areas"], layer_index)
+                dragger_obj._drag(layer["element_size"], z_begin, z_end)
+
+        self.dragger = dragger_obj
+        return dragger_obj
+
+    def _check_mesh_ready(self):
+        """Raise an error if the 2D mesh and rail lookup are unavailable."""
+        if self.mesh2d is None or self.rail_node_index is None:
+            raise RuntimeError(
+                "Error: mesh_checkerboard_box or mesh_assignment is not "
+                "performed"
+            )
+
+    def _sync_dragger_current_layer_xy(self, dragger_obj, node_ids):
+        """Sync snapped 2D nodes into already-created top-layer 3D nodes."""
+        node_ids = np.asarray(node_ids, dtype=np.intp)
+        if node_ids.size == 0:
+            return 0
+
+        node3d_ids = dragger_obj.node_2D_to_3D[node_ids]
+        valid_mask = node3d_ids >= 0
+        if not np.any(valid_mask):
+            return 0
+
+        valid_node2d_ids = node_ids[valid_mask]
+        valid_node3d_ids = node3d_ids[valid_mask]
+        dragger_obj.nodes[valid_node3d_ids, :2] = dragger_obj.node_2D[
+            valid_node2d_ids
+        ]
+        return int(len(valid_node3d_ids))

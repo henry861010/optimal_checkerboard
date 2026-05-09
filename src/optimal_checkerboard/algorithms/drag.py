@@ -128,7 +128,7 @@ def search_face_element(element_coordinates, type, dim, index=None, eps=0.0, ret
     else:
         return np.flatnonzero(res_mask) 
     
-class Engin25D:
+class Dragger:
     def __init__(self):
         ### component
         self.comps = {"EMPTY":0}
@@ -506,3 +506,6 @@ class Engin25D:
         )
 
         self.element_2D_volumn = voulmn.astype(np.float64, copy=False)
+
+
+Engin25D = Dragger

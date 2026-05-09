@@ -16,13 +16,7 @@ class Layer:
         layer_dup = Layer(self.material, self.thk)
         return layer_dup
 
-    def dict(self):
-        return {
-            "material": self.material,
-            "thk": self.thk,
-        }
-
-    def dict_abs(self):
+    def info(self, isAbs=False):
         return {
             "material": self.material,
             "thk": self.thk,

@@ -1,6 +1,6 @@
 import sys
 sys.path.append("/Users/henry/Desktop/code/optimal_checkerboard/src/optimal_checkerboard/algorithms")
-from drag import Engin25D
+from drag import Dragger
 
 # https://pyvista.org/projects/index.html
 
@@ -186,8 +186,8 @@ class Mesh2D:
 mesh2D_obj = Mesh2D()
 mesh2D_obj.mesh_checkerboard(1,[0,100],[0,100])
 
-engin25D_obj = Engin25D()
-engin25D_obj.set_2D(mesh2D_obj)
+dragger_obj = Dragger()
+dragger_obj.set_2D(mesh2D_obj)
 
 area1 = {
     "type": "BOX",
@@ -221,8 +221,8 @@ area1 = {
     ],
     "material": "comp1"
 }
-engin25D_obj._organize(area1)
-engin25D_obj._drag(1,0,5)
+dragger_obj._organize(area1)
+dragger_obj._drag(1,0,5)
 
 area2 = {
     "type": "BOX",
@@ -235,8 +235,8 @@ area2 = {
         }
     ]
 }
-engin25D_obj._organize(area2)
-engin25D_obj._drag(1,5,10)
+dragger_obj._organize(area2)
+dragger_obj._drag(1,5,10)
 
 area3 = {
     "type": "BOX",
@@ -250,8 +250,8 @@ area3 = {
         }
     ]
 }
-engin25D_obj._organize(area3)
-engin25D_obj._drag(5,10,20)
+dragger_obj._organize(area3)
+dragger_obj._drag(5,10,20)
 
 
 area4 = {
@@ -259,7 +259,7 @@ area4 = {
     "dim": [[[20,60], [40,60], [40,80], [60,80], [90,10]]],
     "material": "comp4"
 }
-engin25D_obj._organize(area4)
+dragger_obj._organize(area4)
 area4 = {
     "type": "BOX",
     "dim": [0, 0, 100, 100],
@@ -269,15 +269,15 @@ area4 = {
         "dim": [[[20,60], [40,60], [40,80], [60,80], [90,10]]],
     }]
 }
-engin25D_obj._organize(area4)
-engin25D_obj._drag(1,20,30)
+dragger_obj._organize(area4)
+dragger_obj._drag(1,20,30)
 
 vision_obj = Vision()
 
-nodes = engin25D_obj.nodes[:engin25D_obj.node_num]
-elements = engin25D_obj.elements[:engin25D_obj.element_num]
-element_comps = engin25D_obj.element_comps[:engin25D_obj.element_num]
-comps = engin25D_obj.comps
+nodes = dragger_obj.nodes[:dragger_obj.node_num]
+elements = dragger_obj.elements[:dragger_obj.element_num]
+element_comps = dragger_obj.element_comps[:dragger_obj.element_num]
+comps = dragger_obj.comps
 
 vision_obj.set(comps, elements, element_comps, nodes)
 vision_obj.show()

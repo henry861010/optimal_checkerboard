@@ -71,31 +71,31 @@ class Obj:
 
         return obj_dup
 
-    def dict(self):
-        return {
-            "z": self.z,
-            "z_abs": self.z_abs,
-            "face": self.face.dict(),
-            "thk": self.thk,
-            "layers": [layer.dict() for layer in self.layers],
-            "metals": [metal.dict() for metal in self.metals],
-            "meshs": [mesh.dict() for mesh in self.meshs],
-            "child_objs": [child_obj.dict() for child_obj in self.child_objs],
-        }
-
-    def dict_abs(self):
-        return {
-            "z": self.z,
-            "z_abs": self.z_abs,
-            "face": self.face.dict_abs(),
-            "thk": self.thk,
-            "layers": [layer.dict_abs() for layer in self.layers],
-            "metals": [metal.dict_abs() for metal in self.metals],
-            "meshs": [mesh.dict_abs() for mesh in self.meshs],
-            "child_objs": [
-                child_obj.dict_abs() for child_obj in self.child_objs
-            ],
-        }
+    def info(self, isAbs=False):
+        if isAbs:
+            return {
+                "z": self.z,
+                "z_abs": self.z_abs,
+                "face": self.face.info(isAbs=True),
+                "thk": self.thk,
+                "layers": [layer.info(isAbs=True) for layer in self.layers],
+                "metals": [metal.info(isAbs=True) for metal in self.metals],
+                "meshs": [mesh.info(isAbs=True) for mesh in self.meshs],
+                "child_objs": [
+                    child_obj.info(isAbs=True) for child_obj in self.child_objs
+                ],
+            }
+        else:
+            return {
+                "z": self.z,
+                "z_abs": self.z_abs,
+                "face": self.face.info(),
+                "thk": self.thk,
+                "layers": [layer.info() for layer in self.layers],
+                "metals": [metal.info() for metal in self.metals],
+                "meshs": [mesh.info() for mesh in self.meshs],
+                "child_objs": [child_obj.info() for child_obj in self.child_objs],
+            }
 
     def add_layer(self, thk, material):
         self.layers.append(Layer(thk=thk, material=material))

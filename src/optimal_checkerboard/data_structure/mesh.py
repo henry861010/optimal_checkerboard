@@ -2,6 +2,7 @@
 
 A Mesh stores vertical bounds plus optional line or face constraints that can
 be converted to absolute coordinates for meshing an object region.
+
 """
 
 from copy import deepcopy
@@ -47,23 +48,23 @@ class Mesh:
         mesh_dup.line_abs = deepcopy(self.line_abs)
         return mesh_dup
 
-    def dict(self):
-        return {
-            "begin": self.begin,
-            "end": self.end,
-            "element_size": self.element_size,
-            "line": self.line,
-            "face": self.face.dict() if self.face is not None else None,
-            "begin_abs": self.begin_abs,
-            "end_abs": self.end_abs,
-            "line_abs": self.line_abs,
-        }
-
-    def dict_abs(self):
-        return {
-            "begin": self.begin_abs,
-            "end": self.end_abs,
-            "element_size": self.element_size,
-            "line": self.line_abs,
-            "face": self.face.dict_abs() if self.face is not None else None,
-        }
+    def info(self, isAbs=False):
+        if isAbs:
+            return {
+                "begin": self.begin_abs,
+                "end": self.end_abs,
+                "element_size": self.element_size,
+                "line": self.line_abs,
+                "face": self.face.info(isAbs=True) if self.face is not None else None,
+            }
+        else:
+            return {
+                "begin": self.begin,
+                "end": self.end,
+                "element_size": self.element_size,
+                "line": self.line,
+                "face": self.face.info() if self.face is not None else None,
+                "begin_abs": self.begin_abs,
+                "end_abs": self.end_abs,
+                "line_abs": self.line_abs,
+            }
