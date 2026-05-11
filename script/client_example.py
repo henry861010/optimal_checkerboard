@@ -102,49 +102,6 @@ def _example_obj():
 
     return substrate
 
-def _collect_points(value, points):
-    """Append every xy point found in a nested face dimension object."""
-    if (
-        isinstance(value, (list, tuple))
-        and len(value) >= 2
-        and all(isinstance(item, (int, float)) for item in value)
-    ):
-        points.append(value[:2])
-        return
-
-    if isinstance(value, (list, tuple)):
-        for item in value:
-            _collect_points(item, points)
-
-
-def _face_bounds(faces, offset=1):
-    """Return xy bounds that cover all example faces."""
-    points = []
-    for face in faces:
-        if face["type"] == "BOX":
-            x1, y1, x2, y2 = face["dim"]
-            points.extend([(x1, y1), (x2, y2)])
-        elif face["type"] == "LINE":
-            x1, y1, x2, y2 = face["dim"]
-            points.extend([(x1, y1), (x2, y2)])
-        elif face["type"] == "POLYGON":
-            _collect_points(face["dim"], points)
-        else:
-            raise ValueError(f"Unsupported face type: {face['type']}")
-
-    if not points:
-        raise ValueError("At least one face point is required")
-
-    x_values = [float(point[0]) for point in points]
-    y_values = [float(point[1]) for point in points]
-    return [
-        min(x_values) - offset,
-        min(y_values) - offset,
-        max(x_values) + offset,
-        max(y_values) + offset,
-    ]
-
-
 def _format_z_value(z_value):
     """Return compact labels for z values used in plot titles."""
     return f"{float(z_value):g}"
@@ -266,7 +223,7 @@ def main():
         ratio=0.2,
     )
     faces = mesher.faces
-    mesh2d = mesher.mesh_checkerboard_box(_face_bounds(faces))
+    mesh2d = mesher.mesh_checkerboard()
 
     print()
     print("Obj hierarchy converted to pattern faces:", len(faces))

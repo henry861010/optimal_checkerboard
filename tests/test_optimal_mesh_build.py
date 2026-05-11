@@ -38,8 +38,13 @@ def _build_zero_copy_mesher():
     ]
 
     mesher = OptimalMesh25D()
-    mesher._set_pattern(faces, element_size=5, ratio=0.2)
-    mesher.mesh_checkerboard_box([0, 0, 3, 3])
+    mesher._set_pattern(
+        faces,
+        element_size=5,
+        ratio=0.2,
+        mesh_domain={"type": "BOX", "dim": [0, 0, 3, 3]},
+    )
+    mesher.mesh_checkerboard_box()
     return mesher
 
 
@@ -103,8 +108,13 @@ class TestOptimalMeshBuild(unittest.TestCase):
             },
         ]
         mesher = OptimalMesh25D()
-        mesher._set_pattern(faces, element_size=5, ratio=0.2)
-        mesher.mesh_checkerboard_box([0, 0, 3, 3])
+        mesher._set_pattern(
+            faces,
+            element_size=5,
+            ratio=0.2,
+            mesh_domain={"type": "BOX", "dim": [0, 0, 3, 3]},
+        )
+        mesher.mesh_checkerboard_box()
         area = _area()
         obj_list = [
             [

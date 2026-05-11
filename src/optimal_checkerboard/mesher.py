@@ -43,16 +43,19 @@ Workflow
 ========
 1. Create an :class:`OptimalMesh25D` instance.
 2. Call :meth:`OptimalMesh25D.set_pattern_obj` with a geometry ``Obj``.
-3. Call :meth:`OptimalMesh25D.mesh_checkerboard_box` or
+3. For custom 2D meshing, optionally call
+   :meth:`OptimalMesh25D.get_snap_faces` and build the mesh from those
+   shared-rail default faces.
+4. Call :meth:`OptimalMesh25D.mesh_checkerboard` or
    :meth:`OptimalMesh25D.mesh_assignment`.
-4. During 3D drag, call :meth:`OptimalMesh25D.apply_snap_rules_at_z` whenever
+5. During 3D drag, call :meth:`OptimalMesh25D.apply_snap_rules_at_z` whenever
    the extrusion reaches a pattern z value.
 
 Minimal Example
 ===============
     mesher = OptimalMesh25D()
     mesher.set_pattern_obj(obj, element_size=10.0, ratio=0.1)
-    mesh2d = mesher.mesh_checkerboard_box([xmin, ymin, xmax, ymax])
+    mesh2d = mesher.mesh_checkerboard()
 
     z_events = sorted(
         set(mesher.get_snap_rules()) | set(mesher.get_restore_rules())
@@ -123,7 +126,12 @@ import numpy as np
 
 from optimal_checkerboard.algorithms.feature_lines import _get_feature_lines
 from optimal_checkerboard.algorithms.drag import Dragger
-from optimal_checkerboard.mesh import checkerboard_mesh_box
+from optimal_checkerboard.algorithms.snap_faces import snap_faces_to_shared_rails
+from optimal_checkerboard.mesh import (
+    generate_checkerboard_mesh,
+    mesh_domain_from_obj,
+    normalize_mesh_domain,
+)
 
 if TYPE_CHECKING:
     from optimal_checkerboard.data_structure.geometry import Obj
@@ -167,6 +175,7 @@ class OptimalMesh25D:
         """Initialize an empty mesher state."""
         self.element_size = None
         self.faces = None
+        self.mesh_domain = None
 
         self.group_lines_v = None
         self.group_lines_h = None
@@ -189,7 +198,7 @@ class OptimalMesh25D:
         self.x_pattern_nodes = None
         self.y_pattern_nodes = None
 
-    def _set_pattern(self, faces, element_size, ratio=0.1):
+    def _set_pattern(self, faces, element_size, ratio=0.1, mesh_domain=None):
         """Extract shared rails plus snap and restore rules from raw faces.
 
         Args:
@@ -201,6 +210,8 @@ class OptimalMesh25D:
                 also used with ``ratio`` to derive the rail merge tolerance.
             ratio: Fraction of ``element_size`` used as the merge tolerance for
                 nearby pattern lines.
+            mesh_domain: Optional normalized root footprint domain for private
+                raw-face callers that still want generated checkerboard meshes.
 
         Returns:
             A tuple ``(group_lines_v, group_lines_h, x_list, y_list)`` for
@@ -212,6 +223,7 @@ class OptimalMesh25D:
         """
         self.element_size = float(element_size)
         self.faces = faces
+        self.mesh_domain = normalize_mesh_domain(mesh_domain)
 
         merge_tol = ratio * self.element_size
         (
@@ -234,11 +246,19 @@ class OptimalMesh25D:
         child-object boundaries as pattern faces.  Metals without explicit
         ranges or holes do not add new pattern faces because they inherit their
         parent object's footprint.  CYLINDER faces are ignored with a warning
-        because the pattern mesher only consumes orthogonal edges.
+        because the pattern mesher only consumes orthogonal edges, but a root
+        CYLINDER footprint is still saved as the mesh domain for future 2D
+        mesh generation.
         """
         obj.set_position_abs(0, 0, 0)
+        mesh_domain = mesh_domain_from_obj(obj)
         faces = self._pattern_faces_from_obj(obj)
-        return self._set_pattern(faces, element_size=element_size, ratio=ratio)
+        return self._set_pattern(
+            faces,
+            element_size=element_size,
+            ratio=ratio,
+            mesh_domain=mesh_domain,
+        )
 
     def _pattern_faces_from_obj(self, obj: "Obj"):
         """Return raw pattern face dictionaries from one absolute ``Obj`` tree."""
@@ -333,24 +353,41 @@ class OptimalMesh25D:
             raise ValueError("Mesh line points must contain x and y")
         return [point1[0], point1[1], point2[0], point2[1]]
 
-    def mesh_checkerboard_box(self, dim=None):
-        """Generate a 2D checkerboard mesh from shared rails.
+    def mesh_checkerboard(self):
+        """Generate a 2D checkerboard mesh from the root footprint domain.
 
-        Args:
-            dim: Optional domain bounds.  Use ``[xmin, ymin, xmax, ymax]`` or
-                ``[xmin, ymin, zmin, xmax, ymax, zmax]``.  Bounds are inserted
-                into the mesh coordinate lists so the checkerboard covers the
-                full domain.
+        ``set_pattern_obj`` resolves the root ``Obj`` footprint into
+        ``self.mesh_domain``.  This dispatcher then selects the matching 2D
+        mesh generator for that domain type.
 
         Returns:
             A :class:`Mesh2D` instance containing nodes and elements.
         """
-        self._check_pattern_ready()
+        return self._mesh_checkerboard_for_domain()
 
-        self.mesh_x_list, self.mesh_y_list = self._mesh_lists_with_bounds(dim)
-        nodes, elements = checkerboard_mesh_box(
+    def _mesh_checkerboard_for_domain(self, required_domain_type=None):
+        """Generate and index a checkerboard mesh for ``self.mesh_domain``."""
+        self._check_pattern_ready()
+        self._check_mesh_domain_ready()
+
+        if (
+            required_domain_type is not None
+            and self.mesh_domain["type"] != required_domain_type
+        ):
+            raise ValueError(
+                f"mesh_checkerboard_{required_domain_type.lower()} requires "
+                f"a {required_domain_type} root footprint"
+            )
+
+        (
+            nodes,
+            elements,
             self.mesh_x_list,
             self.mesh_y_list,
+        ) = generate_checkerboard_mesh(
+            self.mesh_domain,
+            self.x_list,
+            self.y_list,
             self.element_size,
         )
 
@@ -402,6 +439,23 @@ class OptimalMesh25D:
         return self._get_rules_from_z_map(
             self.restore_rules_by_z,
             z,
+            eps=eps,
+        )
+
+    def get_snap_faces(self, eps=1e-6):
+        """Return pattern faces adjusted to shared-rail default coordinates.
+
+        The returned face dictionaries are deep copies of ``self.faces``.
+        Coordinates that participate in snap rules are moved from their true
+        pattern coordinate to the shared rail coordinate.  This gives callers a
+        rail-compatible face set for generating or validating a custom 2D mesh;
+        the original faces and snap rules remain unchanged for later z-layer
+        snapping.
+        """
+        self._check_pattern_ready()
+        return snap_faces_to_shared_rails(
+            self.faces,
+            self.snap_rules_by_z,
             eps=eps,
         )
 
@@ -465,8 +519,8 @@ class OptimalMesh25D:
         """
         if self.rail_node_index is None:
             raise RuntimeError(
-                "Error: mesh_checkerboard_box or mesh_assignment is not "
-                "performed"
+                "Error: mesh_checkerboard, mesh_checkerboard_box, or "
+                "mesh_assignment is not performed"
             )
 
         if nodes is None:
@@ -672,38 +726,14 @@ class OptimalMesh25D:
                 "not performed"
             )
 
-    def _mesh_lists_with_bounds(self, dim):
-        """Return rail coordinate lists with optional box bounds."""
-        x_values = list(self.x_list)
-        y_values = list(self.y_list)
-
-        if dim is not None:
-            if len(dim) == 4:
-                xmin, ymin, xmax, ymax = dim
-            elif len(dim) == 6:
-                xmin, ymin, _, xmax, ymax, _ = dim
-            else:
-                raise ValueError(
-                    "dim must be [xmin, ymin, xmax, ymax] or "
-                    "[xmin, ymin, zmin, xmax, ymax, zmax]"
-                )
-
-            x_values.extend([xmin, xmax])
-            y_values.extend([ymin, ymax])
-
-        return self._unique_sorted(x_values), self._unique_sorted(y_values)
-
-    def _unique_sorted(self, values, eps=1e-9):
-        """Return sorted float values with near-duplicates removed."""
-        values = sorted(float(value) for value in values)
-        if not values:
-            return np.asarray([], dtype=np.float64)
-
-        unique_values = [values[0]]
-        for value in values[1:]:
-            if abs(value - unique_values[-1]) > eps:
-                unique_values.append(value)
-        return np.asarray(unique_values, dtype=np.float64)
+    def _check_mesh_domain_ready(self):
+        """Raise an error if generated meshing has no root boundary."""
+        if self.mesh_domain is None:
+            raise RuntimeError(
+                "Error: root mesh boundary is not available. Use "
+                "OptimalMesh25D.set_pattern_obj with an Obj root footprint "
+                "before mesh_checkerboard."
+            )
 
     def _validate_mesh2d_arrays(self):
         """Validate and normalize the assigned public mesh arrays."""
@@ -872,8 +902,8 @@ class OptimalMesh25D:
         """Raise an error if the 2D mesh and rail lookup are unavailable."""
         if self.mesh2d is None or self.rail_node_index is None:
             raise RuntimeError(
-                "Error: mesh_checkerboard_box or mesh_assignment is not "
-                "performed"
+                "Error: mesh_checkerboard, mesh_checkerboard_box, or "
+                "mesh_assignment is not performed"
             )
 
     def _sync_dragger_current_layer_xy(self, dragger_obj, node_ids):

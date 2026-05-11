@@ -168,6 +168,113 @@ class TestSetPattern(unittest.TestCase):
         self.assertEqual(mesher.y_list, [])
         self.assertEqual(mesher.get_snap_rules(), {})
 
+    def test_get_snap_faces_snaps_lines_to_shared_rail_defaults(self):
+        """Verify custom mesh inputs can use line faces on shared rails."""
+        faces = [
+            {
+                "type": "LINE",
+                "dim": [1, 0, 1, 5],
+                "bottom_z": 0,
+                "top_z": 0,
+            },
+            {
+                "type": "LINE",
+                "dim": [1.5, 20, 1.5, 25],
+                "bottom_z": 0,
+                "top_z": 0,
+            },
+        ]
+
+        mesher = OptimalMesh25D()
+        mesher._set_pattern(faces, element_size=5, ratio=0.2)
+
+        snap_faces = mesher.get_snap_faces()
+
+        self.assertEqual(snap_faces[0]["dim"], [1.25, 0.0, 1.25, 5.0])
+        self.assertEqual(snap_faces[1]["dim"], [1.25, 20.0, 1.25, 25.0])
+        self.assertEqual(faces[0]["dim"], [1, 0, 1, 5])
+        self.assertEqual(mesher.faces[1]["dim"], [1.5, 20, 1.5, 25])
+
+    def test_get_snap_faces_snaps_box_edges_to_shared_rails(self):
+        """Verify BOX coordinates are moved to rail defaults per edge."""
+        faces = [
+            {
+                "type": "BOX",
+                "dim": [0, 0, 10, 10],
+                "bottom_z": 0,
+                "top_z": 10,
+            },
+            {
+                "type": "BOX",
+                "dim": [2, 1, 8, 5],
+                "bottom_z": 11,
+                "top_z": 20,
+            },
+        ]
+
+        mesher = OptimalMesh25D()
+        mesher._set_pattern(faces, element_size=11, ratio=0.2)
+
+        snap_faces = mesher.get_snap_faces()
+
+        self.assertEqual(snap_faces[0]["dim"], [1.0, 0.5, 9.0, 10.0])
+        self.assertEqual(snap_faces[1]["dim"], [1.0, 0.5, 9.0, 5.0])
+
+    def test_get_snap_faces_snaps_polygon_vertices_to_shared_rails(self):
+        """Verify POLYGON vertices receive both x and y rail defaults."""
+        faces = [
+            {
+                "type": "POLYGON",
+                "dim": [
+                    [[0, 0], [0, 5], [5, 5], [5, 0], [0, 0]],
+                ],
+                "bottom_z": 0,
+                "top_z": 10,
+            },
+            {
+                "type": "POLYGON",
+                "dim": [
+                    [[1, 1], [1, 4], [4, 4], [4, 1], [1, 1]],
+                ],
+                "bottom_z": 11,
+                "top_z": 20,
+            },
+        ]
+
+        mesher = OptimalMesh25D()
+        mesher._set_pattern(faces, element_size=10, ratio=0.2)
+
+        snap_faces = mesher.get_snap_faces()
+
+        self.assertEqual(
+            snap_faces[0]["dim"],
+            [
+                [
+                    [0.5, 0.5],
+                    [0.5, 4.5],
+                    [4.5, 4.5],
+                    [4.5, 0.5],
+                    [0.5, 0.5],
+                ],
+            ],
+        )
+        self.assertEqual(
+            snap_faces[0]["dim"][0][0],
+            snap_faces[0]["dim"][0][-1],
+        )
+        self.assertEqual(
+            snap_faces[1]["dim"],
+            [
+                [
+                    [0.5, 0.5],
+                    [0.5, 4.5],
+                    [4.5, 4.5],
+                    [4.5, 0.5],
+                    [0.5, 0.5],
+                ],
+            ],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

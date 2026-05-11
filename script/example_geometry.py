@@ -1,7 +1,7 @@
 import sys
-sys.path.append("/Users/henry/Desktop/code/optimal_checkerboard/src/optimal_checkerboard/algorithms")
-from drag import Dragger
-from data_structure.geometry import Obj
+sys.path.append("/Users/henry/Desktop/code/optimal_checkerboard/src/")
+from optimal_checkerboard.data_structure.geometry import Obj
+from optimal_checkerboard import OptimalMesh25D
 
 # https://pyvista.org/projects/index.html
 
@@ -75,14 +75,17 @@ class Vision:
         plotter.show()
 
 ### build geometry
-main_obj = Obj(type="BOX", dim=[0,0, 100, 100], z=0)
+main_face_dim = [0,0, 100, 100]
+main_obj = Obj(type="BOX", dim=main_face_dim, z=0)
 main_obj.add_layer(thk=100, material="EMPTY")
 
-child1_obj = Obj(type="BOX", dim=[80,80, 90, 90], z=90)
+child1_face_dim = [80,80, 90, 90]
+child1_obj = Obj(type="BOX", dim=child1_face_dim, z=90)
 child1_obj.add_layer(thk=10, material="comp1")
 main_obj.add_child(child1_obj)
 
-child2_obj = Obj(type="BOX", dim=[70,70, 80.1, 80.1], z=90)
+child2_face_dim = [70,67, 79.9, 77]
+child2_obj = Obj(type="BOX", dim=child2_face_dim, z=90)
 child2_obj.add_layer(thk=10, material="comp2")
 main_obj.add_child(child2_obj)
 
@@ -93,8 +96,49 @@ group_lines_v, group_lines_h, x_list, y_list = mesher.set_pattern_obj(
     element_size=1,
     ratio=0.2,
 )
-faces = mesher.faces
-mesh2d = mesher.mesh_checkerboard_box(_face_bounds(faces))
+mesher.mesh_checkerboard()
+
+obj_list = [
+    [{
+        "z": 0,
+        "element_size": 2,
+        "areas": [
+            {
+                "type": "BOX",
+                "dim": main_face_dim,
+                "material": "COMP1"
+            }
+        ]
+        
+    }, {
+        "z": 90,
+        "element_size": 2,
+        "areas": [
+            {
+                "type": "BOX",
+                "dim": child1_face_dim,
+                "material": "COMP2"
+            }, {
+                "type": "BOX",
+                "dim": child2_face_dim,
+                "material": "COMP3"
+            }
+        ]
+        
+    }, {
+        "z": 100,
+        "element_size": 2,
+        "areas": [            {
+                "type": "BOX",
+                "dim": main_face_dim,
+                "material": "EMPTY"
+            }
+        ]
+    }]
+]
+
+dragger_obj = mesher.build(obj_list)
+
 
 ### show result
 vision_obj = Vision()

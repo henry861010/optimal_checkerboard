@@ -60,8 +60,13 @@ class TestApplySnapRulesAtZ(unittest.TestCase):
         ]
 
         mesher = OptimalMesh25D()
-        mesher._set_pattern(faces, element_size=10, ratio=0.1)
-        mesh = mesher.mesh_checkerboard_box([0, 0, 3, 20])
+        mesher._set_pattern(
+            faces,
+            element_size=10,
+            ratio=0.1,
+            mesh_domain={"type": "BOX", "dim": [0, 0, 3, 20]},
+        )
+        mesh = mesher.mesh_checkerboard_box()
 
         touched = mesher.apply_snap_rules_at_z(0)
         x_values = set(round(float(x), 3) for x in mesh.nodes[:, 0])
@@ -88,8 +93,13 @@ class TestApplySnapRulesAtZ(unittest.TestCase):
         ]
 
         mesher = OptimalMesh25D()
-        mesher._set_pattern(faces, element_size=5, ratio=0.2)
-        mesh = mesher.mesh_checkerboard_box([0, 0, 3, 25])
+        mesher._set_pattern(
+            faces,
+            element_size=5,
+            ratio=0.2,
+            mesh_domain={"type": "BOX", "dim": [0, 0, 3, 25]},
+        )
+        mesh = mesher.mesh_checkerboard_box()
         before = mesh.nodes.copy()
 
         touched = mesher.apply_snap_rules_at_z(0)
@@ -137,8 +147,13 @@ class TestApplySnapRulesAtZ(unittest.TestCase):
         ]
 
         mesher = OptimalMesh25D()
-        mesher._set_pattern(faces, element_size=5, ratio=0.2)
-        mesh = mesher.mesh_checkerboard_box([0, 0, 3, 25])
+        mesher._set_pattern(
+            faces,
+            element_size=5,
+            ratio=0.2,
+            mesh_domain={"type": "BOX", "dim": [0, 0, 3, 25]},
+        )
+        mesh = mesher.mesh_checkerboard_box()
         before = mesh.nodes.copy()
 
         first_span = (
@@ -187,8 +202,13 @@ class TestApplySnapRulesAtZ(unittest.TestCase):
         ]
 
         mesher = OptimalMesh25D()
-        mesher._set_pattern(faces, element_size=5, ratio=0.2)
-        mesh = mesher.mesh_checkerboard_box([0, 0, 3, 5])
+        mesher._set_pattern(
+            faces,
+            element_size=5,
+            ratio=0.2,
+            mesh_domain={"type": "BOX", "dim": [0, 0, 3, 5]},
+        )
+        mesh = mesher.mesh_checkerboard_box()
         before = mesh.nodes.copy()
         shared_span = (
             np.isclose(before[:, 0], 1.25)
@@ -220,8 +240,13 @@ class TestApplySnapRulesAtZ(unittest.TestCase):
         ]
 
         mesher = OptimalMesh25D()
-        mesher._set_pattern(faces, element_size=11.0, ratio=0.2)
-        mesh = mesher.mesh_checkerboard_box([-1, -1, 11, 11])
+        mesher._set_pattern(
+            faces,
+            element_size=11.0,
+            ratio=0.2,
+            mesh_domain={"type": "BOX", "dim": [-1, -1, 11, 11]},
+        )
+        mesh = mesher.mesh_checkerboard_box()
 
         mesher.apply_snap_rules_at_z(0)
         mesher.apply_snap_rules_at_z(11)
@@ -250,8 +275,13 @@ class TestApplySnapRulesAtZ(unittest.TestCase):
         ]
 
         mesher = OptimalMesh25D()
-        mesher._set_pattern(faces, element_size=10, ratio=0.1)
-        mesher.mesh_checkerboard_box([0, 0, 3, 10])
+        mesher._set_pattern(
+            faces,
+            element_size=10,
+            ratio=0.1,
+            mesh_domain={"type": "BOX", "dim": [0, 0, 3, 10]},
+        )
+        mesher.mesh_checkerboard_box()
 
         with self.assertRaisesRegex(ValueError, "shape"):
             mesher.apply_snap_rules_at_z(0, nodes=np.zeros(1))

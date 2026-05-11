@@ -14,6 +14,7 @@
 
 ```text
 OptimalMesh25D.set_pattern_obj()
+  -> mesh_domain_from_obj()
   -> _pattern_faces_from_obj()
   -> _set_pattern()
   -> _get_feature_lines()
@@ -30,7 +31,9 @@ OptimalMesh25D.set_pattern_obj()
               -> _add_to_rail()
               -> _serialize_rail()
               -> _rail_rules()
-OptimalMesh25D.mesh_checkerboard_box()
+OptimalMesh25D.mesh_checkerboard()
+  -> generate_checkerboard_mesh()
+      -> checkerboard_mesh_box()  # BOX root footprint
   -> _build_rail_node_index()
       -> _build_node_axis_rail_ids()
 OptimalMesh25D.apply_snap_rules_at_z(z)
@@ -51,8 +54,11 @@ merge_tol = ratio * element_size
 _get_feature_lines(faces, merge_tol, return_details=True)
 ```
 
-`Obj` 裡的 `CYLINDER` face 不會進入這個流程；conversion 階段會發出
-warning 並略過，因為 shared-rail pattern 目前只支援 orthogonal edge。
+`set_pattern_obj()` 會用 root `Obj.face` 先建立 mesh domain/boundary；
+`Obj` 裡的 `CYLINDER` face 不會進入 feature-line 流程，conversion 階段會發出
+warning 並略過，因為 shared-rail pattern 目前只支援 orthogonal edge。root footprint
+若是 `CYLINDER`，會保留為 mesh domain，之後由 `mesh_checkerboard()` 分派到
+CYLINDER 的 2D mesh generator；目前該 generator 入口已存在但尚未實作。
 
 這裡要注意命名：`_get_feature_lines(faces, element_size, ...)` 的第二個參數在 function docstring 裡叫 `element_size`，但 `_set_pattern()` 實際傳入的是 `merge_tol`。也就是說，在目前程式裡 `_get_feature_lines()` 收到的值代表「允許合併 shared rail 的最大座標距離」，不是原始 mesh element size。
 
