@@ -127,6 +127,19 @@ class TestBuildSharedRails(unittest.TestCase):
         self.assertIn(0.0, result["snap_rules_by_z"])
         self.assertIn(10.0, result["snap_rules_by_z"])
 
+    def test_overlapping_z_ranges_prevent_neighbor_rail_target_reversal(self):
+        """Verify adjacent shared rails cannot snap into reversed x order."""
+        lines = [
+            [[10, 0], [10, 10], [0, 100]],
+            [[14, 12], [14, 20], [0, 100]],
+            [[15, 23], [15, 30], [0, 100]],
+            [[20, 37], [20, 45], [0, 100]],
+        ]
+
+        result = build_shared_rails(lines, merge_tol=6.0)
+
+        self.assertEqual(result["x_list"], [10.0, 14.0, 17.5])
+
 
 if __name__ == "__main__":
     unittest.main()

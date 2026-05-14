@@ -353,7 +353,7 @@ class OptimalMesh25D:
             raise ValueError("Mesh line points must contain x and y")
         return [point1[0], point1[1], point2[0], point2[1]]
 
-    def mesh_checkerboard(self):
+    def mesh_checkerboard(self, model_type="Full Model", center_x=None, center_y=None):
         """Generate a 2D checkerboard mesh from the root footprint domain.
 
         ``set_pattern_obj`` resolves the root ``Obj`` footprint into
@@ -363,9 +363,9 @@ class OptimalMesh25D:
         Returns:
             A :class:`Mesh2D` instance containing nodes and elements.
         """
-        return self._mesh_checkerboard_for_domain()
+        return self._mesh_checkerboard_for_domain(model_type=model_type, center_x=center_x, center_y=center_y)
 
-    def _mesh_checkerboard_for_domain(self, required_domain_type=None):
+    def _mesh_checkerboard_for_domain(self, model_type=model_type, center_x=center_x, center_y=center_y, required_domain_type=None):
         """Generate and index a checkerboard mesh for ``self.mesh_domain``."""
         self._check_pattern_ready()
         self._check_mesh_domain_ready()
@@ -519,7 +519,7 @@ class OptimalMesh25D:
         """
         if self.rail_node_index is None:
             raise RuntimeError(
-                "Error: mesh_checkerboard, mesh_checkerboard_box, or "
+                "Error: mesh_checkerboard or "
                 "mesh_assignment is not performed"
             )
 
@@ -902,7 +902,7 @@ class OptimalMesh25D:
         """Raise an error if the 2D mesh and rail lookup are unavailable."""
         if self.mesh2d is None or self.rail_node_index is None:
             raise RuntimeError(
-                "Error: mesh_checkerboard, mesh_checkerboard_box, or "
+                "Error: mesh_checkerboard or "
                 "mesh_assignment is not performed"
             )
 

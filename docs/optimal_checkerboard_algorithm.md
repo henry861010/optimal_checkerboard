@@ -1,4 +1,4 @@
-# feature_lines 演算法資料流說明
+# optimal_checkerboard 演算法資料流說明
 
 這份文件說明 `src/optimal_checkerboard/algorithms/feature_lines.py` 相關的資料流、程式呼叫順序、各 function 的責任，以及每個階段產生的資料格式。這段流程的目的，是把輸入的幾何 face 轉成 checkerboard mesh 需要的共享 grid rail、bottom snap rule 與 top restore rule；後段也說明 `OptimalMesh25D.apply_snap_rules_at_z()` 如何用這些 rules 修正每個 z layer 的節點。
 
@@ -27,6 +27,9 @@ OptimalMesh25D.set_pattern_obj()
               -> _can_add_to_rail()
                   -> _has_near_endpoint_conflict()
                   -> _has_blocking_intermediate_feature()
+              -> _preserves_adjacent_rail_order()
+                  -> _rail_with_feature()
+                  -> _adjacent_rails_keep_order()
               -> _new_rail()
               -> _add_to_rail()
               -> _serialize_rail()
@@ -305,7 +308,8 @@ raw lines
 | 分類 | `_classify_line()` | raw lines | `vertical_lines`, `horizontal_lines` |
 | 標準化 | `_line_to_feature()` | 單條 line | feature dict |
 | 建 rail | `_build_axis_rails()` | 同 axis features | public rails, snap / restore rules |
-| 合併判斷 | `_can_add_to_rail()` | rail + feature | `True` / `False` |
+| rail 內合併判斷 | `_can_add_to_rail()` | rail + feature | `True` / `False` |
+| 相鄰 rail 順序判斷 | `_preserves_adjacent_rail_order()` | rails + candidate merge | `True` / `False` |
 | 更新 rail | `_new_rail()` / `_add_to_rail()` | feature 或 rail + feature | internal rail |
 | 輸出 rail | `_serialize_rail()` | internal rail | public rail dict |
 | 輸出 rule | `_rail_rules()` | internal rail | snap / restore rule lists |
@@ -495,7 +499,7 @@ feature = {
 
 位置：`rail_builder.py`
 
-責任：針對同一個 axis，把可以共用 checkerboard grid line 的 features 合併成 shared rails，並產生 snap rules。
+責任：針對同一個 axis，把可以共用 checkerboard grid line 的 features 合併成 shared rails，並產生 snap / restore rules。
 
 輸入：
 
@@ -511,16 +515,17 @@ eps = 浮點容忍值
 1. 依 `(coord, z_bottom, z_top, span_min)` 排序 feature。
 2. 用 active rail window 跳過已經離目前 feature 太遠的 rails。
 3. 逐一處理 feature。
-4. 對候選 rails 呼叫 `_can_add_to_rail()` 判斷是否能合併。
-5. 若有多個可合併 rail，選擇與目前 feature 距離最近的 rail。
-6. 無法合併就 `_new_rail()`，可以合併就 `_add_to_rail()`。
-7. 最後依 rail coord 排序，序列化成 public rail，並產生 snap rules。
+4. 對候選 rails 呼叫 `_can_add_to_rail()` 判斷此 feature 是否能加入該 rail。
+5. 呼叫 `_preserves_adjacent_rail_order()`，模擬加入後是否仍能維持相鄰 rails 的 snap 座標順序。
+6. 若有多個可合併 rail，選擇與目前 feature 距離最近的 rail。
+7. 無法合併就 `_new_rail()`，可以合併就 `_add_to_rail()`。
+8. 最後依 rail coord 排序，序列化成 public rail，並產生 snap / restore rules。
 
 更接近程式碼的流程如下：
 
 ```python
 if not features:
-    return [], []
+    return [], [], []
 
 sorted_features = sorted(
     features,
@@ -551,6 +556,13 @@ for feature in sorted_features:
         if feature["coord"] < rail["min_coord"] - merge_tol - eps:
             continue
         if not _can_add_to_rail(rail, feature, merge_tol, eps, features):
+            continue
+        if not _preserves_adjacent_rail_order(
+            rails,
+            index,
+            feature,
+            eps,
+        ):
             continue
 
         distance = abs(feature["coord"] - rail["coord"])
@@ -589,18 +601,19 @@ distance = abs(feature["coord"] - rail["coord"])
 
 ### `_build_axis_rails()` 的輸出
 
-`_build_axis_rails()` 回傳兩個 list：
+`_build_axis_rails()` 回傳三個 list：
 
 ```python
 (
     public_rails,
     snap_rules,
+    restore_rules,
 )
 ```
 
 `public_rails` 已經是 `_serialize_rail()` 後的格式，不包含 `members` 與 `spans_by_z`。
 
-`snap_rules` 是同一 axis 的 rule list，排序 key 是：
+`snap_rules` 與 `restore_rules` 是同一 axis 的 rule list，排序 key 是：
 
 ```python
 (
@@ -611,7 +624,7 @@ distance = abs(feature["coord"] - rail["coord"])
 )
 ```
 
-後續 `build_shared_rails()` 還會再把 x/y 兩個方向的 snap rules 合併，並改成依 z 分組。
+後續 `build_shared_rails()` 還會再把 x/y 兩個方向的 snap / restore rules 合併，並改成依 z 分組。
 
 ### rail 內部格式
 
@@ -659,6 +672,47 @@ rail["coord"] = (rail["min_coord"] + rail["max_coord"]) / 2.0
 4. active z interval overlap 的中間 feature 如果座標落在新 rail 範圍內，而且 span 與候選 feature 或 rail member 重疊，會阻止合併。
 
 這些規則是為了避免同一個 checkerboard node 在同一個 z event 被要求 snap 到兩個不同 target coordinates，或讓相鄰幾何在 corner 附近被不合理地合併。
+
+注意：`_can_add_to_rail()` 只判斷「feature 能不能放進這一條 rail」。它不檢查「這條 rail 加入 feature 後，會不會和旁邊的 rail 在 snap 後發生座標反序」。這個跨 rail 的拓撲安全性由 `_preserves_adjacent_rail_order()` 負責。
+
+### `_preserves_adjacent_rail_order(rails, rail_index, feature, eps)`
+
+位置：`rail_builder.py`
+
+責任：模擬把 `feature` 加入 `rails[rail_index]` 之後，檢查同 axis 的相鄰 rails 是否仍維持座標順序。這個檢查是避免 mesh topology 還是原本 rail 順序，但 snap 後節點座標交錯，造成負面積或負體積。
+
+流程：
+
+1. 用 `_rail_with_feature()` 建立 candidate rail snapshot，不直接 mutate 原本 rail。
+2. 將模擬後的 rails 依 `(coord, min_coord, max_coord)` 排序。
+3. 對每一對相鄰 rails 呼叫 `_adjacent_rails_keep_order(left, right, eps)`。
+4. 只要有一對相鄰 rails 可能反序，就拒絕這次 merge。
+
+這裡檢查的是 rail-level 的順序 invariant：如果結構 mesh 中 `left.coord < right.coord`，那 snap / restore 後也不能讓左 rail 的任何可能 target 穿過右 rail，或讓右 rail 的 target 穿過左 rail。
+
+### `_adjacent_rails_keep_order(left, right, eps)`
+
+位置：`rail_builder.py`
+
+責任：判斷兩條相鄰 rails 的 default coord 與 target coords 是否保持從左到右的單調順序。
+
+對 x rail 來說，`left` / `right` 指較小 / 較大的 x rail；對 y rail 來說則是較小 / 較大的 y rail。規則如下：
+
+1. `left["coord"] < right["coord"]` 必須成立。default checkerboard rails 本身不能重疊或反序。
+2. `left` rail 裡所有 feature 的 `target_coord` 都必須小於 `right["coord"]`。否則當右 rail 在某段仍停在 default coordinate 時，左 rail snap 過去就可能穿越右 rail。
+3. `right` rail 裡所有 feature 的 `target_coord` 都必須大於 `left["coord"]`。否則右 rail 可能穿越左 rail。
+4. 如果 `left` 和 `right` 的 features active z interval overlap，則必須滿足 `left_feature["coord"] < right_feature["coord"]`。這表示同一段 z extrusion 期間，兩條相鄰 rails 的真實 pattern targets 也不能反序。
+
+這個判斷不是單純禁止 `min_coord/max_coord` range overlap。range overlap 本身只代表兩條 shared rails 各自吸收過的真實座標範圍交疊；真正危險的是 snap / restore 期間相鄰 rails 的座標可能反序。
+
+典型危險例子：
+
+```text
+rail A members: x=10, x=15  -> default coord = 12.5
+rail B members: x=14, x=20  -> default coord = 17.0
+```
+
+如果某個 z layer 讓 rail A snap 到 `x=15`，而 rail B 在同一 active z interval snap 到 `x=14`，就會讓原本位於左側的 rail A 穿越 rail B。類似地，如果某個 target 穿過鄰居的 default coord，也會讓部分未 snap 或 restore 的 span 有反序風險。這種情況會破壞 checkerboard mesh 的結構順序，後續 extrusion 時可能出現負面積或負體積。因此 `_preserves_adjacent_rail_order()` 會在 grouping 階段就拒絕造成這類反序風險的 merge。
 
 ### `_spans_overlap_or_touch(a_min, a_max, b_min, b_max, eps)`
 
@@ -920,6 +974,63 @@ True or False
 
 只要任一條件失敗就回傳 `False`。
 
+### `_preserves_adjacent_rail_order(rails, rail_index, feature, eps)`
+
+用途：合併判斷的跨 rail gatekeeper。它會模擬把 `feature` 加入候選 rail，確認所有相鄰 rails 在 default coord 與 snap target 上仍保持單調順序。
+
+輸入：
+
+```python
+rails = [internal_rail, ...]
+rail_index = int
+feature = feature_dict
+```
+
+輸出：
+
+```python
+True or False
+```
+
+判斷流程：
+
+1. 呼叫 `_rail_with_feature()` 建立不會 mutate 原始資料的 simulated rail。
+2. 將 simulated rails 依 `(coord, min_coord, max_coord)` 排序。
+3. 對排序後每一對相鄰 rails 呼叫 `_adjacent_rails_keep_order()`。
+
+這個 function 是 `_can_add_to_rail()` 之後的第二層 gate。`_can_add_to_rail()` 確保「同一 rail 內」沒有 span/z 衝突；`_preserves_adjacent_rail_order()` 確保「不同 rails 之間」不會在 snap 後交錯。
+
+### `_rail_with_feature(rail, feature)`
+
+用途：建立一個輕量 simulated rail，內容等同於把 `feature` 加入 `rail` 後的狀態。
+
+輸出欄位：
+
+```python
+{
+    "axis": rail["axis"],
+    "coord": midpoint,
+    "min_coord": new_min,
+    "max_coord": new_max,
+    "members": rail["members"] + [feature],
+}
+```
+
+此 function 不會複製 `lines_by_z` 或 `spans_by_z`，因為相鄰 rail 順序檢查只需要 `coord`、`min_coord`、`max_coord` 與 `members`。
+
+### `_adjacent_rails_keep_order(left, right, eps)`
+
+用途：檢查一對相鄰 rails 是否保持左/右或下/上的 target 順序。
+
+失敗條件：
+
+1. `left["coord"] >= right["coord"] - eps`。
+2. 任一 `left` member 的 `coord >= right["coord"] - eps`。
+3. 任一 `right` member 的 `coord <= left["coord"] + eps`。
+4. 有 active z overlap 的 feature pair 滿足 `left_feature["coord"] >= right_feature["coord"] - eps`。
+
+第 2 與第 3 點保護「一條 rail snap、另一條 rail 留在 default coordinate」的情境；第 4 點保護「兩條相鄰 rails 在同一 active z interval 都 snap 到真實 pattern target」的情境。
+
 ### `_has_near_endpoint_conflict(rail, feature, merge_tol, eps)`
 
 用途：阻止 active z overlap 時端點距離太近的不同座標線段合併。
@@ -1027,12 +1138,13 @@ rail["spans_by_z"][z].append((span_min, span_max, coord))
 ```python
 public_rails = [public_rail, ...]
 snap_rules = [snap_rule, ...]
+restore_rules = [restore_rule, ...]
 ```
 
 如果 `features` 是空 list，直接回傳：
 
 ```python
-([], [])
+([], [], [])
 ```
 
 ### `_serialize_rail(rail, rail_id)`
@@ -1324,8 +1436,8 @@ snap_rules_by_z = {
 
 可以合併到同一 shared rail 的常見情況：
 
-- active z interval 不 overlap 的線段可以合併，即使它們在 xy span 上 overlap，因為它們不會在同一段 extrusion interval 同時有效。
-- active z interval overlap 的線段如果 span 不 overlap/touch，且沒有 near endpoint conflict，可以合併。
+- active z interval 不 overlap 的線段通常可以合併，即使它們在 xy span 上 overlap，因為它們不會在同一段 extrusion interval 同時有效；但合併後仍必須通過相鄰 rail 順序檢查。
+- active z interval overlap 的線段如果 span 不 overlap/touch、沒有 near endpoint conflict、沒有跨過中間 blocking feature，且不會造成相鄰 rail target 反序，可以合併。
 - 完全重複的線段可以進同一 rail，但只會產生一條 snap rule。
 
 不能合併的常見情況：
@@ -1334,6 +1446,7 @@ snap_rules_by_z = {
 - active z interval overlap、span overlap/touch、但 target coord 不同。
 - active z interval overlap、不同 coord、span endpoint gap 介於 `eps` 與 `merge_tol - eps` 之間。
 - active z interval overlap 的中間 feature 位於 proposed rail 的座標範圍內，且 span 與候選 feature 或 rail member overlap/touch。
+- 合併後的 rail 會讓相鄰 rails 的 default coord 或 target coord 反序。例如左 rail 的某個 target 會大於等於右 rail 的 default coord，右 rail 的某個 target 會小於等於左 rail 的 default coord，或兩條相鄰 rails 在 active z overlap 時出現 `left_target >= right_target`。
 - 線段不是水平或垂直。
 - z interval 不合法，例如 `top_z < bottom_z`。
 

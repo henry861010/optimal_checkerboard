@@ -114,6 +114,66 @@ def _can_add_to_rail(rail, feature, merge_tol, eps, all_features):
     return True
 
 
+def _preserves_adjacent_rail_order(rails, rail_index, feature, eps):
+    """Return whether adding a feature keeps neighboring rail targets ordered."""
+    simulated_rails = []
+    for index, rail in enumerate(rails):
+        if index == rail_index:
+            simulated_rails.append(_rail_with_feature(rail, feature))
+        else:
+            simulated_rails.append(rail)
+
+    simulated_rails.sort(
+        key=lambda rail: (
+            rail["coord"],
+            rail["min_coord"],
+            rail["max_coord"],
+        )
+    )
+
+    for left, right in zip(simulated_rails, simulated_rails[1:]):
+        if not _adjacent_rails_keep_order(left, right, eps):
+            return False
+
+    return True
+
+
+def _rail_with_feature(rail, feature):
+    """Return a lightweight rail snapshot with the feature added."""
+    new_min = min(rail["min_coord"], feature["coord"])
+    new_max = max(rail["max_coord"], feature["coord"])
+    return {
+        "axis": rail["axis"],
+        "coord": (new_min + new_max) / 2.0,
+        "min_coord": new_min,
+        "max_coord": new_max,
+        "members": rail["members"] + [feature],
+    }
+
+
+def _adjacent_rails_keep_order(left, right, eps):
+    """Return whether two adjacent rails keep left targets before right ones."""
+    if left["coord"] >= right["coord"] - eps:
+        return False
+
+    for feature in left["members"]:
+        if feature["coord"] >= right["coord"] - eps:
+            return False
+
+    for feature in right["members"]:
+        if left["coord"] >= feature["coord"] - eps:
+            return False
+
+    for left_feature in left["members"]:
+        for right_feature in right["members"]:
+            if not _z_ranges_active_overlap(left_feature, right_feature, eps):
+                continue
+            if left_feature["coord"] >= right_feature["coord"] - eps:
+                return False
+
+    return True
+
+
 def _has_near_endpoint_conflict(rail, feature, merge_tol, eps):
     """Return whether near active endpoints should prevent rail sharing."""
     for member in rail["members"]:
@@ -252,6 +312,13 @@ def _build_axis_rails(features, axis, merge_tol, eps):
                 merge_tol,
                 eps,
                 features,
+            ):
+                continue
+            if not _preserves_adjacent_rail_order(
+                rails,
+                index,
+                feature,
+                eps,
             ):
                 continue
 

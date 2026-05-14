@@ -44,7 +44,7 @@ def _build_zero_copy_mesher():
         ratio=0.2,
         mesh_domain={"type": "BOX", "dim": [0, 0, 3, 3]},
     )
-    mesher.mesh_checkerboard_box()
+    mesher.mesh_checkerboard()
     return mesher
 
 
@@ -114,7 +114,7 @@ class TestOptimalMeshBuild(unittest.TestCase):
             ratio=0.2,
             mesh_domain={"type": "BOX", "dim": [0, 0, 3, 3]},
         )
-        mesher.mesh_checkerboard_box()
+        mesher.mesh_checkerboard()
         area = _area()
         obj_list = [
             [

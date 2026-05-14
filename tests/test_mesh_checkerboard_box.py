@@ -13,15 +13,15 @@ from optimal_checkerboard import OptimalMesh25D
 from optimal_checkerboard.data_structure.geometry import Obj
 
 
-class TestMeshCheckerboardBox(unittest.TestCase):
-    def test_mesh_checkerboard_box_requires_pattern(self):
+class TestMeshCheckerboard(unittest.TestCase):
+    def test_mesh_checkerboard_requires_pattern(self):
         """Verify mesh generation requires pattern preprocessing first."""
         mesher = OptimalMesh25D()
 
         with self.assertRaisesRegex(RuntimeError, "set_pattern"):
-            mesher.mesh_checkerboard_box()
+            mesher.mesh_checkerboard()
 
-    def test_mesh_checkerboard_box_requires_root_boundary(self):
+    def test_mesh_checkerboard_requires_root_boundary(self):
         """Verify raw pattern callers need an explicit mesh domain."""
         faces = [
             {
@@ -36,25 +36,25 @@ class TestMeshCheckerboardBox(unittest.TestCase):
         mesher._set_pattern(faces, element_size=10, ratio=0.1)
 
         with self.assertRaisesRegex(RuntimeError, "root mesh boundary"):
-            mesher.mesh_checkerboard_box()
+            mesher.mesh_checkerboard()
 
-    def test_mesh_checkerboard_box_rejects_legacy_dim_argument(self):
-        """Verify BOX mesh generation no longer accepts boundary dims."""
+    def test_mesh_checkerboard_rejects_legacy_dim_argument(self):
+        """Verify mesh generation no longer accepts boundary dims."""
         obj = Obj("BOX", [0, 0, 10, 10])
 
         mesher = OptimalMesh25D()
         mesher.set_pattern_obj(obj, element_size=10, ratio=0.1)
 
         with self.assertRaises(TypeError):
-            mesher.mesh_checkerboard_box([0, 0, 10, 10])
+            mesher.mesh_checkerboard([0, 0, 10, 10])
 
-    def test_mesh_checkerboard_box_builds_nodes_and_elements(self):
+    def test_mesh_checkerboard_builds_nodes_and_elements(self):
         """Verify generated meshes expose only node coordinates and elements."""
         obj = Obj("BOX", [0, 0, 10, 10])
 
         mesher = OptimalMesh25D()
         mesher.set_pattern_obj(obj, element_size=10, ratio=0.1)
-        mesh = mesher.mesh_checkerboard_box()
+        mesh = mesher.mesh_checkerboard()
 
         self.assertFalse(hasattr(mesh, "element_internal"))
         self.assertEqual(mesh.nodes.shape, (4, 3))
