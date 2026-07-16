@@ -42,6 +42,11 @@ class Face:
         face_dup.dim_abs = deepcopy(self.dim_abs)
         return face_dup
 
+    def info(self, isAbs=False):
+        if isAbs:
+            return self.dict_abs()
+        return self.dict()
+
     def dict(self):
         return {
             "type": self.type,

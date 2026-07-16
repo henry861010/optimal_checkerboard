@@ -58,7 +58,7 @@ class Metal:
         return metal_dup
 
     def info(self, isAbs=False):
-        if isAbe:
+        if isAbs:
             return {
                 "type": self.type,
                 "begin": self.begin_abs,
@@ -80,4 +80,3 @@ class Metal:
                 "ranges": [face_range.info() for face_range in self.ranges],
                 "holes": [hole.info() for hole in self.holes],
             }
-
