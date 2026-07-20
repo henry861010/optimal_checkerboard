@@ -365,7 +365,7 @@ class OptimalMesh25D:
         """
         return self._mesh_checkerboard_for_domain(model_type=model_type, center_x=center_x, center_y=center_y)
 
-    def _mesh_checkerboard_for_domain(self, model_type=model_type, center_x=center_x, center_y=center_y, required_domain_type=None):
+    def _mesh_checkerboard_for_domain(self, model_type="Full Model", center_x=None, center_y=None, required_domain_type=None):
         """Generate and index a checkerboard mesh for ``self.mesh_domain``."""
         self._check_pattern_ready()
         self._check_mesh_domain_ready()
