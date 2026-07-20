@@ -138,6 +138,7 @@ if TYPE_CHECKING:
 
 
 _PATTERN_FACE_TYPES = {"BOX", "LINE", "POLYGON"}
+_RULE_Z_DECIMALS = 4
 
 
 @dataclass
@@ -235,7 +236,7 @@ class OptimalMesh25D:
             self.restore_rules_by_z,
             self.rails,
         ) = _get_feature_lines(self.faces, merge_tol, return_details=True)
-        self.reset_snap_state()
+        self._clear_restore_state()
 
         return self.group_lines_v, self.group_lines_h, self.x_list, self.y_list
 
@@ -415,6 +416,7 @@ class OptimalMesh25D:
         self.mesh_y_list = np.asarray(self.y_list, dtype=np.float64)
         self._validate_mesh2d_arrays()
         self._build_rail_node_index()
+        self._validate_required_rail_coverage()
         self.reset_snap_state()
         return self.mesh2d
 
@@ -459,8 +461,29 @@ class OptimalMesh25D:
             eps=eps,
         )
 
-    def reset_snap_state(self):
-        """Clear delayed restore state for a fresh z traversal."""
+    def reset_snap_state(self, nodes=None):
+        """Restore shared rails and clear delayed state for a fresh traversal.
+
+        Args:
+            nodes: Optional mesh node array to restore. If omitted, restores
+                ``self.mesh2d.nodes`` when a mesh has been indexed.
+
+        Returns:
+            Number of unique structural rail nodes restored to their baseline
+            shared-rail coordinates.
+        """
+        self._clear_restore_state()
+
+        if self.rail_node_index is None:
+            return 0
+        if nodes is None:
+            if self.mesh2d is None:
+                return 0
+            nodes = self.mesh2d.nodes
+        return self._restore_shared_rail_baseline(nodes)
+
+    def _clear_restore_state(self):
+        """Clear delayed restore bookkeeping without moving mesh nodes."""
         self._restore_rule_buffer = []
         self._restore_buffer_source_z = None
 
@@ -484,10 +507,26 @@ class OptimalMesh25D:
         if z in rules_by_z:
             return z, rules_by_z[z]
 
-        for z_key, rules in rules_by_z.items():
-            if abs(float(z_key) - z) <= eps:
-                return z_key, rules
+        canonical_z = self._canonical_rule_z(z)
+        if canonical_z in rules_by_z:
+            return canonical_z, rules_by_z[canonical_z]
+
+        candidates = [
+            (abs(float(z_key) - z), float(z_key), z_key, rules)
+            for z_key, rules in rules_by_z.items()
+            if abs(float(z_key) - z) <= eps
+        ]
+        if candidates:
+            _, _, z_key, rules = min(
+                candidates,
+                key=lambda candidate: (candidate[0], candidate[1]),
+            )
+            return z_key, rules
         return None, []
+
+    def _canonical_rule_z(self, z):
+        """Return the same rounded z key used by shared-rail rule buckets."""
+        return round(float(z), _RULE_Z_DECIMALS)
 
     def apply_snap_rules_at_z(
         self,
@@ -535,14 +574,34 @@ class OptimalMesh25D:
         z = float(z)
         restore_rules = self._consume_restore_rule_buffer(z, eps=eps)
         snap_rules = self.get_snap_rules(z, eps=eps)
+        continuing_snap_rules = []
+        if restore_rules or snap_rules:
+            continuing_snap_rules = [
+                rule
+                for rule in self._active_snap_rules_at_z(z)
+                if rule not in snap_rules
+            ]
         touched = self._apply_snap_rule_batch(
             nodes,
-            restore_rules + snap_rules,
+            restore_rules + continuing_snap_rules + snap_rules,
             eps=eps,
             return_touched_node_ids=return_touched_node_ids,
         )
         self._stage_restore_rules_at_z(z, eps=eps)
         return touched
+
+    def _active_snap_rules_at_z(self, z):
+        """Return snap rules whose rounded active interval includes z."""
+        if self.snap_rules_by_z is None:
+            return []
+
+        z_key = self._canonical_rule_z(z)
+        return [
+            rule
+            for rules in self.snap_rules_by_z.values()
+            for rule in rules
+            if float(rule["z_bottom"]) <= z_key <= float(rule["z_top"])
+        ]
 
     def _apply_snap_rule_batch(
         self,
@@ -592,11 +651,11 @@ class OptimalMesh25D:
             return []
 
         source_z = self._restore_buffer_source_z
-        if source_z is None or z <= float(source_z) + eps:
+        if source_z is None or self._canonical_rule_z(z) <= float(source_z):
             return []
 
         rules = self._restore_rule_buffer
-        self.reset_snap_state()
+        self._clear_restore_state()
         return rules
 
     def _stage_restore_rules_at_z(self, z, eps=1e-6):
@@ -838,12 +897,64 @@ class OptimalMesh25D:
 
             rail_indices.append(
                 {
+                    "coord": float(rail["coord"]),
                     "node_ids": active_node_ids[node_refs],
                     "span_values": span_values[node_refs],
                 }
             )
 
         return rail_indices
+
+    def _validate_required_rail_coverage(self, eps=1e-6):
+        """Reject assigned meshes that cannot execute every snap rule."""
+        for axis, rail_indices in self.rail_node_index.items():
+            for rail_id, rail_index in enumerate(rail_indices):
+                if len(rail_index["node_ids"]):
+                    continue
+                raise ValueError(
+                    "mesh2d is missing active nodes for required "
+                    f"{axis}-axis shared rail {rail_id} at "
+                    f"coordinate {rail_index['coord']}"
+                )
+
+        for z, rules in self.snap_rules_by_z.items():
+            for rule in rules:
+                node_ids = self._span_node_ids(rule, eps=eps)
+                if len(node_ids) >= 2:
+                    continue
+                raise ValueError(
+                    "mesh2d does not provide enough active nodes for snap "
+                    f"rule span on {rule['axis']}-axis shared rail "
+                    f"{rule['rail_id']} at z={z}: "
+                    f"[{rule['span_min']}, {rule['span_max']}]"
+                )
+
+    def _restore_shared_rail_baseline(self, nodes):
+        """Move indexed structural rail nodes back to shared coordinates."""
+        nodes = np.asarray(nodes)
+        if nodes.ndim != 2 or nodes.shape[1] < 2:
+            raise ValueError("nodes must have shape (n, 2+)")
+        if not np.issubdtype(nodes.dtype, np.floating):
+            raise ValueError("nodes must contain floating point coordinates")
+
+        restored_node_chunks = []
+        for axis, coord_axis in (("x", 0), ("y", 1)):
+            for rail_index in self.rail_node_index[axis]:
+                node_ids = rail_index["node_ids"]
+                if not len(node_ids):
+                    continue
+                if int(node_ids.max()) >= len(nodes):
+                    raise ValueError(
+                        "nodes do not contain every indexed shared-rail node"
+                    )
+                changed_mask = nodes[node_ids, coord_axis] != rail_index["coord"]
+                nodes[node_ids, coord_axis] = rail_index["coord"]
+                if np.any(changed_mask):
+                    restored_node_chunks.append(node_ids[changed_mask])
+
+        if not restored_node_chunks:
+            return 0
+        return int(len(np.unique(np.concatenate(restored_node_chunks))))
 
     def build(self, obj_list, preserve_mesh2d=False):
         """Build a 3D mesh by snapping the 2D rails and dragging each layer.
@@ -873,7 +984,9 @@ class OptimalMesh25D:
             if len(obj) < 2:
                 continue
 
-            self.reset_snap_state()
+            restored = self.reset_snap_state(nodes=dragger_obj.node_2D)
+            if restored:
+                dragger_obj._cal_volumns()
             dragger_obj._organize_empty()
 
             for layer_index, layer in enumerate(obj[:-1]):

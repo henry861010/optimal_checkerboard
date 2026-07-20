@@ -222,6 +222,54 @@ class TestApplySnapRulesAtZ(unittest.TestCase):
 
         self.assertTrue(np.allclose(mesh.nodes[shared_span, 0], 1.5))
 
+    def test_overlapping_same_target_feature_does_not_restore_early(self):
+        """Verify a shorter duplicate cannot restore a still-active feature."""
+        faces = [
+            {
+                "type": "LINE",
+                "dim": [0, 0, 0, 10],
+                "bottom_z": 0,
+                "top_z": 5,
+            },
+            {
+                "type": "LINE",
+                "dim": [0, 0, 0, 10],
+                "bottom_z": 0,
+                "top_z": 10,
+            },
+            {
+                "type": "LINE",
+                "dim": [1, 20, 1, 30],
+                "bottom_z": 0,
+                "top_z": 10,
+            },
+        ]
+
+        mesher = OptimalMesh25D()
+        mesher._set_pattern(
+            faces,
+            element_size=10,
+            ratio=0.2,
+            mesh_domain={"type": "BOX", "dim": [-1, 0, 2, 30]},
+        )
+        mesh = mesher.mesh_checkerboard()
+        shared_span = (
+            np.isclose(mesh.nodes[:, 0], 0.5)
+            & (mesh.nodes[:, 1] >= 0)
+            & (mesh.nodes[:, 1] <= 10)
+        )
+
+        mesher.apply_snap_rules_at_z(0)
+        mesher.apply_snap_rules_at_z(5)
+        mesher.apply_snap_rules_at_z(6)
+
+        self.assertTrue(np.allclose(mesh.nodes[shared_span, 0], 0.0))
+
+        mesher.apply_snap_rules_at_z(10)
+        mesher.apply_snap_rules_at_z(11)
+
+        self.assertTrue(np.allclose(mesh.nodes[shared_span, 0], 0.5))
+
     def test_cross_z_box_corner_snaps_to_next_face(self):
         """Verify shared-rail corners snap when both axes move at one z."""
         faces = [
@@ -285,6 +333,111 @@ class TestApplySnapRulesAtZ(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "shape"):
             mesher.apply_snap_rules_at_z(0, nodes=np.zeros(1))
+
+    def test_apply_uses_raw_high_precision_z_for_distinct_buckets(self):
+        """Verify applying raw z values selects the intended rounded event."""
+        faces = [
+            {
+                "type": "LINE",
+                "dim": [1, 0, 1, 5],
+                "bottom_z": 1.23444,
+                "top_z": 1.23444,
+            },
+            {
+                "type": "LINE",
+                "dim": [1.5, 6, 1.5, 11],
+                "bottom_z": 1.23446,
+                "top_z": 1.23446,
+            },
+        ]
+        mesher = OptimalMesh25D()
+        mesher._set_pattern(
+            faces,
+            element_size=5,
+            ratio=0.2,
+            mesh_domain={"type": "BOX", "dim": [0, 0, 3, 11]},
+        )
+        mesh = mesher.mesh_checkerboard()
+        baseline = mesh.nodes.copy()
+
+        first_touched, first_node_ids = mesher.apply_snap_rules_at_z(
+            1.23444,
+            return_touched_node_ids=True,
+        )
+        restored = mesher.reset_snap_state()
+        self.assertGreater(restored, 0)
+        np.testing.assert_allclose(
+            mesh.nodes[first_node_ids, :2],
+            baseline[first_node_ids, :2],
+        )
+        second_touched, second_node_ids = mesher.apply_snap_rules_at_z(
+            1.23446,
+            return_touched_node_ids=True,
+        )
+
+        self.assertGreater(first_touched, 0)
+        self.assertGreater(second_touched, 0)
+        self.assertTrue(np.all(baseline[first_node_ids, 1] <= 5))
+        self.assertTrue(np.all(baseline[second_node_ids, 1] >= 6))
+
+    def test_active_partial_overlap_wins_over_earlier_restore(self):
+        """Verify a continuing feature is re-applied after a partial restore."""
+        faces = [
+            {
+                "type": "LINE",
+                "dim": [1, 0, 1, 10],
+                "bottom_z": 0,
+                "top_z": 20,
+            },
+            {
+                "type": "LINE",
+                "dim": [1, 5, 1, 15],
+                "bottom_z": 5,
+                "top_z": 10,
+            },
+            {
+                "type": "LINE",
+                "dim": [1.5, 20, 1.5, 30],
+                "bottom_z": 30,
+                "top_z": 40,
+            },
+        ]
+        mesher = OptimalMesh25D()
+        mesher._set_pattern(
+            faces,
+            element_size=5,
+            ratio=0.2,
+            mesh_domain={"type": "BOX", "dim": [0, 0, 3, 30]},
+        )
+        mesh = mesher.mesh_checkerboard()
+
+        mesher.apply_snap_rules_at_z(0)
+        mesher.apply_snap_rules_at_z(5)
+        mesher.apply_snap_rules_at_z(10)
+        mesher.apply_snap_rules_at_z(15)
+
+        active_span = (
+            np.isclose(mesh.nodes[:, 0], 1.0)
+            & (mesh.nodes[:, 1] >= 0)
+            & (mesh.nodes[:, 1] <= 10)
+        )
+        restored_tail = (
+            np.isclose(mesh.nodes[:, 0], 1.25)
+            & np.isclose(mesh.nodes[:, 1], 15)
+        )
+        self.assertEqual(int(active_span.sum()), 3)
+        self.assertEqual(int(restored_tail.sum()), 1)
+
+        mesher.apply_snap_rules_at_z(20)
+        self.assertEqual(
+            int(
+                (
+                    np.isclose(mesh.nodes[:, 0], 1.0)
+                    & (mesh.nodes[:, 1] <= 10)
+                ).sum()
+            ),
+            3,
+        )
 
 
 if __name__ == "__main__":

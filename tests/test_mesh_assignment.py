@@ -96,6 +96,74 @@ class TestMeshAssignment(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "mesh2d.nodes"):
             mesher.mesh_assignment(mesh2d)
 
+    def test_mesh_assignment_rejects_missing_required_rail(self):
+        """Verify every required shared rail has active mesh nodes."""
+        faces = [
+            {
+                "type": "LINE",
+                "dim": [1, 0, 1, 5],
+                "bottom_z": 0,
+                "top_z": 10,
+            },
+            {
+                "type": "LINE",
+                "dim": [1.5, 6, 1.5, 11],
+                "bottom_z": 20,
+                "top_z": 30,
+            },
+        ]
+        mesh2d = Mesh2D(
+            nodes=np.asarray(
+                [[0, 0], [3, 0], [3, 11], [0, 11]],
+                dtype=np.float64,
+            ),
+            elements=np.asarray([[0, 1, 2, 3]], dtype=np.int32),
+        )
+        mesher = OptimalMesh25D()
+        mesher._set_pattern(faces, element_size=5, ratio=0.2)
+
+        with self.assertRaisesRegex(ValueError, "required x-axis shared rail"):
+            mesher.mesh_assignment(mesh2d)
+
+    def test_mesh_assignment_rejects_missing_rule_span_nodes(self):
+        """Verify a present rail must cover each required snap-rule span."""
+        faces = [
+            {
+                "type": "LINE",
+                "dim": [1, 0, 1, 5],
+                "bottom_z": 0,
+                "top_z": 10,
+            },
+            {
+                "type": "LINE",
+                "dim": [1.5, 6, 1.5, 11],
+                "bottom_z": 20,
+                "top_z": 30,
+            },
+        ]
+        mesh2d = Mesh2D(
+            nodes=np.asarray(
+                [
+                    [0, 0],
+                    [1.25, 0],
+                    [3, 0],
+                    [0, 5],
+                    [1.25, 5],
+                    [3, 5],
+                ],
+                dtype=np.float64,
+            ),
+            elements=np.asarray(
+                [[0, 1, 4, 3], [1, 2, 5, 4]],
+                dtype=np.int32,
+            ),
+        )
+        mesher = OptimalMesh25D()
+        mesher._set_pattern(faces, element_size=5, ratio=0.2)
+
+        with self.assertRaisesRegex(ValueError, "snap rule span"):
+            mesher.mesh_assignment(mesh2d)
+
 
 if __name__ == "__main__":
     unittest.main()

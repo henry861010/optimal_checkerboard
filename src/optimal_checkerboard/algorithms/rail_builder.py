@@ -55,23 +55,14 @@ def _spans_overlap_or_touch(a_min, a_max, b_min, b_max, eps):
 def _z_ranges_active_overlap(feature, other, eps):
     """Return whether two features are active over the same z interval.
 
-    Positive-height ranges conflict only over positive overlap.  Zero-height
-    legacy features still conflict with another feature at the same snap event.
+    Ranges conflict when they overlap or share a top/bottom event. This keeps
+    the top plane inclusive for positive-height and zero-height features.
     """
     a_min = feature["z_bottom"]
     a_max = feature["z_top"]
     b_min = other["z_bottom"]
     b_max = other["z_top"]
-    a_zero = abs(a_max - a_min) <= eps
-    b_zero = abs(b_max - b_min) <= eps
-
-    if a_zero and b_zero:
-        return abs(a_min - b_min) <= eps
-    if a_zero:
-        return b_min - eps <= a_min < b_max - eps
-    if b_zero:
-        return a_min - eps <= b_min < a_max - eps
-    return max(a_min, b_min) < min(a_max, b_max) - eps
+    return max(a_min, b_min) <= min(a_max, b_max) + eps
 
 
 def _can_add_to_rail(rail, feature, merge_tol, eps, all_features):
@@ -339,7 +330,7 @@ def _build_axis_rails(features, axis, merge_tol, eps):
 
     for rail_id, rail in enumerate(rails):
         public_rails.append(_serialize_rail(rail, rail_id))
-        rail_snap_rules, rail_restore_rules = _rail_rules(rail, rail_id)
+        rail_snap_rules, rail_restore_rules = _rail_rules(rail, rail_id, eps)
         snap_rules.extend(rail_snap_rules)
         restore_rules.extend(rail_restore_rules)
 
@@ -381,7 +372,30 @@ def _serialize_rail(rail, rail_id):
     }
 
 
-def _rail_rules(rail, rail_id):
+def _same_restore_track(feature, other, eps):
+    """Return whether two features share one target and span lifecycle."""
+    return (
+        abs(feature["coord"] - other["coord"]) <= eps
+        and abs(feature["span_min"] - other["span_min"]) <= eps
+        and abs(feature["span_max"] - other["span_max"]) <= eps
+    )
+
+
+def _restore_is_deferred(feature, members, eps):
+    """Return whether a matching active feature extends beyond this top z."""
+    for other in members:
+        if other is feature:
+            continue
+        if other["z_top"] <= feature["z_top"] + eps:
+            continue
+        if not _same_restore_track(feature, other, eps):
+            continue
+        if _z_ranges_active_overlap(feature, other, eps):
+            return True
+    return False
+
+
+def _rail_rules(rail, rail_id, eps):
     """Create deduplicated snap and restore rules for all rail features."""
     snap_rules = []
     restore_rules = []
@@ -391,6 +405,7 @@ def _rail_rules(rail, rail_id):
     for feature in rail["members"]:
         snap_rule_key = (
             feature["z"],
+            feature["z_top"],
             round(feature["span_min"], 8),
             round(feature["span_max"], 8),
             round(feature["coord"], 8),
@@ -412,6 +427,9 @@ def _rail_rules(rail, rail_id):
                     "feature_id": feature["feature_id"],
                 }
             )
+
+        if _restore_is_deferred(feature, rail["members"], eps):
+            continue
 
         restore_rule_key = (
             feature["z_top"],

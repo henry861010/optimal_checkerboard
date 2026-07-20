@@ -55,6 +55,74 @@ class TestDragEngine(unittest.TestCase):
 
         np.testing.assert_array_equal(hits, [0, 2])
 
+    def test_search_polygon_keeps_elements_outside_holes_on_the_boundary(self):
+        elements = np.asarray(
+            [
+                [1, 2, 2, 2, 2, 3, 1, 3],
+                [1, 1, 2, 1, 2, 2, 1, 2],
+                [2, 2, 3, 2, 3, 3, 2, 3],
+                [5.2, 2.2, 5.8, 2.2, 5.8, 2.8, 5.2, 2.8],
+                [3, 2, 5, 2, 5, 3, 3, 3],
+                [1.5, 1.5, 2.5, 1.5, 2.5, 2.5, 1.5, 2.5],
+            ],
+            dtype=np.float64,
+        )
+        dim = [
+            [[0, 0], [0, 6], [8, 6], [8, 0]],
+            [[2, 2], [3, 2], [3, 3], [2, 3]],
+            [[5, 2], [6, 2], [6, 3], [5, 3]],
+        ]
+
+        hits = search_face_element(elements, "POLYGON", dim)
+
+        np.testing.assert_array_equal(hits, [0, 1, 4])
+
+    def test_assign_metal_takes_minimum_random_prefix_to_reach_target(self):
+        engine = Engin25D()
+        volumes = np.ones(4, dtype=np.float64)
+        expected_order = np.random.default_rng(7).permutation(len(volumes))
+
+        chosen = engine._assign_metal(
+            volumes,
+            density=50,
+            total_volume=4,
+            randomSeed=7,
+        )
+
+        np.testing.assert_array_equal(chosen, expected_order[:2])
+
+        chosen = engine._assign_metal(
+            volumes,
+            density=50,
+            total_volume=1,
+            randomSeed=7,
+        )
+        np.testing.assert_array_equal(chosen, expected_order[:1])
+
+    def test_assign_metal_handles_nonpositive_and_unreachable_targets(self):
+        engine = Engin25D()
+        volumes = np.asarray([1.0, 2.0, 3.0])
+
+        for density in (0, -1):
+            with self.subTest(density=density):
+                chosen = engine._assign_metal(
+                    volumes,
+                    density=density,
+                    total_volume=volumes.sum(),
+                    randomSeed=3,
+                )
+                self.assertEqual(chosen.dtype, np.int32)
+                self.assertEqual(len(chosen), 0)
+
+        expected_order = np.random.default_rng(3).permutation(len(volumes))
+        chosen = engine._assign_metal(
+            volumes,
+            density=200,
+            total_volume=volumes.sum(),
+            randomSeed=3,
+        )
+        np.testing.assert_array_equal(chosen, expected_order)
+
     def test_set_2d_uses_split_element_arrays(self):
         mesh = SimpleMesh2D()
         engine = Engin25D()

@@ -18,16 +18,25 @@ def _search_polygon_element(x4, y4, dim, eps=0.0):
     points = np.stack((x4, y4), axis=-1).reshape(-1, 2)
 
     inside_hull = np.zeros(len(points), dtype=bool)
-    inside_hole = np.zeros(len(points), dtype=bool)
+    element_inside_hole = np.zeros(len(x4), dtype=bool)
     for loop in loops:
         loop_mask = _points_in_loop_inclusive(points, loop["points"], eps=eps)
         if loop["role"] == "hull":
             inside_hull |= loop_mask
         else:
-            inside_hole |= loop_mask
+            boundary_mask = _points_on_loop_boundary(
+                points,
+                np.asarray(loop["points"], dtype=float),
+                eps=eps,
+            )
+            strict_inside_mask = loop_mask & ~boundary_mask
+            element_inside_hole |= (
+                strict_inside_mask.reshape(len(x4), 4).any(axis=1)
+                | loop_mask.reshape(len(x4), 4).all(axis=1)
+            )
 
-    point_mask = inside_hull & ~inside_hole
-    return point_mask.reshape(len(x4), 4).all(axis=1)
+    element_inside_hull = inside_hull.reshape(len(x4), 4).all(axis=1)
+    return element_inside_hull & ~element_inside_hole
 
 
 def _points_in_loop_inclusive(points, loop, eps=0.0):
@@ -267,14 +276,19 @@ class Dragger:
         Operates by shuffling indices only and using cumsum to avoid Python loops.
         Returns the chosen *row indices within this subset* (not global IDs).
         """
-        if density == 0:
+        if density <= 0:
             return np.empty((0), dtype=np.int32)
             
         volumes = np.asarray(volumes)
+        if len(volumes) == 0:
+            return np.empty((0), dtype=np.int32)
+
         target_indices = np.arange(len(volumes), dtype=np.int32)
         
         # target volume
         target = (density / 100.0) * total_volume
+        if target <= 0:
+            return np.empty((0), dtype=np.int32)
 
         # random order of candidates (indices only, not rows)
         rng = np.random.default_rng(randomSeed)
@@ -282,13 +296,11 @@ class Dragger:
 
         # cumulative sum until target
         csum = np.cumsum(volumes[random_indices])
-        k = np.searchsorted(csum, target, side="right")  # number to take (may be 0)
-        if k > 0:
-            chosen_indices  = target_indices[random_indices[:k+1]]
-            return chosen_indices
-        else:
-            # no assignment if density threshold is 0 or vols too small
-            return np.empty((0), dtype=np.int32)
+        chosen_count = min(
+            int(np.searchsorted(csum, target, side="left")) + 1,
+            len(random_indices),
+        )
+        return random_indices[:chosen_count]
 
     def _organize(self, areas, layer=1):
         if isinstance(areas, dict):

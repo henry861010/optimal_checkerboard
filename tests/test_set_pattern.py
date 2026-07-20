@@ -195,6 +195,37 @@ class TestSetPattern(unittest.TestCase):
         self.assertEqual(faces[0]["dim"], [1, 0, 1, 5])
         self.assertEqual(mesher.faces[1]["dim"], [1.5, 20, 1.5, 25])
 
+    def test_get_snap_faces_keeps_rules_for_distinct_top_z_values(self):
+        """Verify rule dedup retains coincident faces with different lifetimes."""
+        faces = [
+            {
+                "type": "LINE",
+                "dim": [0, 0, 0, 10],
+                "bottom_z": 0,
+                "top_z": 5,
+            },
+            {
+                "type": "LINE",
+                "dim": [0, 0, 0, 10],
+                "bottom_z": 0,
+                "top_z": 10,
+            },
+            {
+                "type": "LINE",
+                "dim": [1, 20, 1, 30],
+                "bottom_z": 0,
+                "top_z": 10,
+            },
+        ]
+
+        mesher = OptimalMesh25D()
+        mesher._set_pattern(faces, element_size=10, ratio=0.2)
+
+        snap_faces = mesher.get_snap_faces()
+
+        self.assertEqual(snap_faces[0]["dim"], [0.5, 0.0, 0.5, 10.0])
+        self.assertEqual(snap_faces[1]["dim"], [0.5, 0.0, 0.5, 10.0])
+
     def test_get_snap_faces_snaps_box_edges_to_shared_rails(self):
         """Verify BOX coordinates are moved to rail defaults per edge."""
         faces = [

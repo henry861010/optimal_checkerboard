@@ -103,6 +103,61 @@ class TestBuildSharedRails(unittest.TestCase):
         self.assertIn(0.0, result["snap_rules_by_z"])
         self.assertIn(10.0, result["snap_rules_by_z"])
 
+    def test_touching_positive_z_ranges_with_conflicting_targets_do_not_share(self):
+        """Verify a top/bottom event cannot reuse one rail for two targets."""
+        lines = [
+            [[1, 0], [1, 10], [0, 10]],
+            [[1.5, 0], [1.5, 10], [10, 20]],
+        ]
+
+        result = build_shared_rails(lines, merge_tol=1.0)
+
+        self.assertEqual(result["x_list"], [1.0, 1.5])
+
+    def test_zero_height_event_at_positive_top_does_not_share_conflicting_rail(self):
+        """Verify a legacy point event conflicts with an inclusive top plane."""
+        lines = [
+            [[1, 0], [1, 10], [0, 10]],
+            [[1.5, 0], [1.5, 10], [10, 10]],
+        ]
+
+        result = build_shared_rails(lines, merge_tol=1.0)
+
+        self.assertEqual(result["x_list"], [1.0, 1.5])
+
+    def test_same_target_z_chain_restores_only_after_last_top(self):
+        """Verify overlapping copies stay snapped through their full z union."""
+        lines = [
+            [[0, 0], [0, 10], [0, 5]],
+            [[0, 0], [0, 10], [0, 10]],
+            [[1, 20], [1, 30], [0, 10]],
+        ]
+
+        result = build_shared_rails(lines, merge_tol=2.0)
+        target_rules = [
+            rule
+            for rule in result["snap_rules_by_z"][0.0]
+            if rule["target_coord"] == 0.0
+        ]
+
+        self.assertEqual(result["x_list"], [0.5])
+        self.assertEqual(
+            sorted(rule["z_top"] for rule in target_rules),
+            [5.0, 10.0],
+        )
+        self.assertNotIn(5.0, result["restore_rules_by_z"])
+        self.assertEqual(
+            len(
+                [
+                    rule
+                    for rule in result["restore_rules_by_z"][10.0]
+                    if rule["span_min"] == 0.0
+                    and rule["span_max"] == 10.0
+                ]
+            ),
+            1,
+        )
+
     def test_overlapping_z_ranges_prevent_span_conflicting_rail_sharing(self):
         """Verify active z overlap prevents nested faces from sharing rails."""
         lines = [
