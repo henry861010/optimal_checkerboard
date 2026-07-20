@@ -6,9 +6,13 @@
 
 - XY 使用 Cartesian coordinates。
 - Z 表示垂直堆疊方向。
-- 數值座標可以是 `int` 或 `float`，內部通常會轉成 `float`。
+- 幾何輸入的數值座標可以是 `int` 或 `float`；2D mesh nodes 會正規化為
+  `float64`，避免 `float32` 將很接近但不同的 topology coordinates 壓成同一值。
 - pattern feature edge 必須是水平或垂直。
 - 所有 Z interval 必須滿足 `bottom_z <= top_z` 或 `begin <= end`。
+- XY topology coordinates 與 Z event values 保留原始浮點值，不會 rounding。
+- 兩個 topology coordinates 即使只相差 1 ULP 也仍是不同 rail/target，不會
+  alias；scale-aware ULP noise 只用來判讀單條 line 的 axis direction。
 - `POLYGON` 可以省略重複的結尾點；程式會自動連接最後一點與第一點。
 - `POLYGON` 使用 winding 表示 loop role：
   - 順時針：hull。
@@ -40,6 +44,11 @@ Obj(type, dim, z=0)
 | `meshs` | `list[Mesh]` | 額外 mesh constraints |
 | `child_objs` | `list[Obj]` | 子物件 |
 | `thk` | number | 所有 layers 厚度總和 |
+
+`type` 能表達 POLYGON/CYLINDER 不代表完整 meshing pipeline 已支援該 root
+footprint。目前只有 explicit BOX domain 有內建 generation、可驗證的 custom
+assignment 與 `build()`。POLYGON 仍可作為 BOX domain 內的 orthogonal pattern/build
+selector；CYLINDER 只保留資料模型與 low-level symbol。
 
 加入 layer：
 
@@ -134,7 +143,10 @@ Face(
 Face("CYLINDER", [center_x, center_y, radius])
 ```
 
-此 repository 保留 CYLINDER domain dispatcher 與 generator 入口，供外部 cylinder mesher 整合。CYLINDER 不會被轉成 orthogonal shared-rail pattern lines。
+此 repository 仍有 CYLINDER domain dispatcher symbol，但 CYLINDER 不會被轉成
+orthogonal shared-rail pattern lines，且目前沒有可證明其 domain partition 的
+high-level pipeline。`mesh_checkerboard()`、帶 CYLINDER footprint 的
+`mesh_assignment()` 與 `build()` 皆 fail closed；不可用外部 `Mesh2D` 繞過。
 
 ### 2.3 `Layer`
 
@@ -287,7 +299,8 @@ mesher._set_pattern(
 }
 ```
 
-若 raw caller 仍要呼叫 `mesh_checkerboard()`，必須提供 root mesh domain：
+若 raw caller 仍要呼叫 `mesh_checkerboard()` 或 `build()`，必須提供 explicit
+BOX root mesh domain：
 
 ```python
 mesh_domain = {
@@ -354,6 +367,18 @@ merge_tol    = 1.0
 
 只有在幾何與拓撲規則都允許時，座標範圍不超過 `merge_tol` 的 features 才可能共用 rail。
 
+`merge_tol` 不會變更 pattern coordinate 的相等關係。preprocessing 會以
+geometry-scale snap-plan preflight 檢查每個 exact Z boundary 及相鄰 boundary 之間的
+open interval state。若 optimized shared rails 無法保持 target consistency、rail order、
+coupled corners 或正面積嚴格凸四邊形，mesher 會自動回退到 `merge_tol=0`
+的 exact-coordinate rails。回退原因可由：
+
+```python
+mesher.rail_optimization_fallback
+```
+
+取得；`None` 表示沒有回退。
+
 ## 5. 自訂 2D mesh 輸入
 
 ```python
@@ -370,16 +395,26 @@ mesh2d.elements
 必要格式：
 
 ```text
-nodes     shape (n, 2+)  floating point coordinates
+nodes     shape (n, 2+)  numeric coordinates; assignment normalizes to float64
 elements  shape (m, 4)   integer node ids
 ```
 
 驗證規則：
 
 - `elements` 的 node id 必須位於 `[0, len(nodes))`。
-- 每一條 `mesher.x_list` rail 必須在 nodes 中有對應的 X 座標。
-- 每一條 `mesher.y_list` rail 必須在 nodes 中有對應的 Y 座標。
+- 每條 feature span 必須在對應 structural rail 上由連續、共線的
+  quadrilateral boundary-edge chain 完整覆蓋；只有 span endpoints 或零散 nodes 不足夠。
+- 每個 mandatory X/Y station 必須有正長度 mesh edge，且不得從 active
+  quadrilateral 內部穿過。
+- 上述 coverage 與 rail coordinate 預設使用 exact comparison，不會將彼此接近的 rails
+  alias 到同一批 nodes。
+- 所有 quadrilaterals 必須是反時針、正面積、嚴格凸四邊形。
+- assignment 會實際套用每個拓撲上不同的 critical Z snap state，只接受所有
+  state 都保持有效的 mesh。
 - snapping 可以改變 coordinates，但不應改變 topology 或 node ids。
+
+任一檢查失敗時，`mesh_assignment()` 會還原 caller 的 `nodes`/`elements`
+attributes 與 mesher 先前的 mesh state，不留下半更新的 assignment。
 
 外部 mesher 可先取得 shared-rail default faces：
 
@@ -389,11 +424,72 @@ snap_faces = mesher.get_snap_faces()
 
 這個方法回傳 deep copies，不會修改原始 `mesher.faces`。
 
+內建 BOX generator 會產生 `STRUCTURED_BOX` metadata（`grid_shape`、`x_nodes`、
+`y_nodes`）供 mesher 直接以一維 axis 算出 rail node ids 與 incident elements。
+已知為 exact row-major BOX grid 的 custom mesh 可以二擇一提供同格式 metadata：
+
+```python
+mesh2d.metadata = metadata
+mesher.mesh_assignment(mesh2d)
+
+# 或明確傳入：
+mesher.mesh_assignment(mesh2d, structured_metadata=metadata)
+```
+
+若兩者同時存在，明確傳入的 `structured_metadata` 優先。
+
+```python
+metadata = {
+    "kind": "STRUCTURED_BOX",
+    "grid_shape": (len(y_nodes), len(x_nodes)),
+    "x_nodes": x_nodes,
+    "y_nodes": y_nodes,
+}
+```
+
+metadata 不是跳過 safety checks 的宣告。mesher 會逐 chunk exact 驗證
+`grid_shape`、strictly increasing axis values、每個 row-major node coordinate 與每個
+canonical quadrilateral connectivity，成功後才改用 direct axis/incident-element
+arithmetic。
+
+沒有提供 metadata 的 custom mesh 會走通用 exact edge-chain/station coverage、
+rail indexes 與 node-to-element CSR adjacency。對接近千萬級的 2D custom mesh，
+請事先依 [Performance and capacity guidance](performance.md) 估算驗證 transient
+與常駐 index 記憶體。已提供但驗證失敗的 metadata 會使 assignment
+失敗，不會自動改走通用路徑。
+
+當 pattern 有 explicit BOX `mesh_domain` 時，通用 custom path 還會對整個
+domain partition 做 fail-closed proof：
+
+- 每個 `elements` 引用的 node 都必須在 BOX 內；
+- 每條 undirected edge 的 multiplicity 必須為 1 或 2，拒絕 duplicate elements
+  與 non-manifold edges；
+- multiplicity-one edges 必須全部位於 physical BOX boundary，並連續覆蓋四邊；
+- 以 `longdouble` 累計的總面積必須在只由累計次數決定的誤差界內
+  等於 domain 面積。
+
+因此 holes、disconnected regions、internal unmatched edges 與 overlapping/crossing
+embeddings 都會被拒絕。驗證過的 `STRUCTURED_BOX` path 則以 exact
+row-major topology 與 axis endpoints 等於 BOX bounds 作為 compact proof。
+
+目前 explicit `POLYGON` 或 `CYLINDER` footprint 的 custom domain partition 尚未實作，
+`mesh_assignment()` 會拋出 `NotImplementedError`。沒有 `mesh_domain` 的 private raw-face
+caller 仍可指派 2D mesh 來執行 snap API，但因為無法證明完整 footprint，
+不能呼叫 `build()`。
+
 ## 6. `build()` 的 3D layer stack
 
 ```python
-dragger = mesher.build(obj_list, preserve_mesh2d=False)
+dragger = mesher.build(
+    obj_list,
+    preserve_mesh2d=False,
+    allow_independent_bodies=False,
+)
 ```
+
+`build()` 需要 explicit `BOX` mesh domain，才能證明完整 footprint coverage。
+沒有 domain 時拋出 `RuntimeError`；`POLYGON` 或 `CYLINDER` footprint 則因為
+partition proof 尚未實作而拋出 `NotImplementedError`。
 
 `Obj` hierarchy 與 `obj_list` 是兩份不同用途的輸入：
 
@@ -414,6 +510,19 @@ obj_list = [
 ]
 ```
 
+預設最多只能有一個至少兩筆 entries 的 non-empty stack。多 stack 並不
+建立 conformal interface；每個 stack 會產生獨立 3D nodes，即使座標接觸也不共點。
+只有當 caller 明確要 independent FEM bodies 時才可選擇：
+
+```python
+mesher.build(obj_list, allow_independent_bodies=True)
+```
+
+`allow_independent_bodies` 與 `preserve_mesh2d` 的值必須是 `bool` 或
+`numpy.bool_`。其他 truthy/falsy 值（例如字串 `"False"`、整數 `1`）都會在
+任何 mesh mutation／3D allocation 前拒絕，不能意外開啟 independent-body
+topology 或 preservation mode。
+
 每個 object stack 是依 Z 遞增排列的 layer event list：
 
 ```python
@@ -427,7 +536,11 @@ object_stack = [
 
 至少要有兩個 Z entries。最後一筆主要提供前一層的 `z_end`，不會被 organize 或 drag。
 
-`build()` 只會在每個非 sentinel entry 的 `z` 呼叫 `apply_snap_rules_at_z()`。因此若某個 pattern feature 在 `z=5` 開始，object stack 也必須包含 `{"z": 5, ...}`，否則該 snap event 不會在正確高度執行。一般而言，layer stack 應包含所有幾何、材料與 snap/restore 會改變的 Z events。
+每個 object stack 的 Z 必須是有限值且嚴格遞增。`build()` 只在每個非
+sentinel entry 的 `z` 重建 active snap state，因此 stack 不得跨過任何沒有
+layer boundary 的 pattern lifecycle event。對每個位於 stack 起訖 Z 之間的 exact
+`z_bottom` 與 `z_top`，stack 都必須有完全相同的 Z entry。這是強制驗證：
+遺漏 event 會在產生任何 3D output 前拋出 `ValueError`。
 
 ### 6.2 一般 layer
 
@@ -455,13 +568,33 @@ object_stack = [
 }
 ```
 
-即使 sentinel 含有其他欄位，`build()` 也不會處理其 `areas`。
+即使 sentinel 含有其他欄位，`build()` 也不會處理其 `areas`。但 sentinel
+不是被忽略的幾何平面：它的 exact Z active snap state 會被套用並同步到
+已生成的最終 3D top plane，防止 top surface 留在前一個 rail state。
 
 ### 6.4 Area
 
+在任何 3D allocation 或 mesh mutation 前，`build()` 會對每個
+`[z_begin, z_end]` slab 中的下列邊界做 exact representability preflight：
+
+1. 每個 area 的 outer boundary。
+2. 每個 area hole。
+3. 每個 area metal 的 `ranges` 與 `holes`。
+
+每條 selector edge 必須由 original active pattern edges、永久 BOX domain edges，或該
+slab 內完全沒有被 snap 位移的 structural rail intervals 連續覆蓋。
+Pattern edge 的 active Z 必須包住整個 slab；只在一個 endpoint 或 slab 部分高度
+存在都不算可表示。座標、span union 與 Z coverage 都是 exact comparison。
+
+Rail 與 feature spans 採 closed interval。若 baseline rail 的 `[span_min, span_max]`
+有一段在 slab 內被 snap rule 位移，該 displaced span 的兩個 endpoints 也從
+baseline 可用範圍排除；實作以 `nextafter` 表達兩側仍可使用的最近 float64
+座標。因此 selector boundary 不能只靠 displaced endpoint 冒充未位移 rail；只有
+另一條 active pattern edge 或永久 domain edge exact 覆蓋時才可能通過。
+
 ```python
 {
-    "type": "BOX" | "POLYGON" | "CYLINDER",
+    "type": "BOX" | "POLYGON",
     "dim": ...,
     "material": "MATERIAL_NAME",
     "holes": [...],    # optional
@@ -479,7 +612,19 @@ BOX 範例：
 }
 ```
 
+每個 area 的 `material` 是必要欄位，且必須是 non-empty string。缺漏、空字串或
+非字串會在 build geometry preflight 拒絕，不會建立匿名/default component。
+
 Area selection 以完整 2D quadrilateral element 為單位；元素四個角都位於 area 內時，該元素才會被選取。
+
+`POLYGON` area 可用於 explicit BOX domain 內，但必須是 orthogonal 且通過上述
+slab-boundary proof。`CYLINDER` selector 目前無法由 orthogonal pattern edges exact
+表示，high-level `build()` 會拒絕。
+
+同一 slab 內兩個 areas 不得同時包含同一 2D element。有 priority region 時要用
+explicit `holes` 從其中一個 area 排除；否則拋出 `ValueError`，而不以
+list order 靜默覆寫 material。Area/range/hole 搜尋將 2D elements 分成 bounded
+chunks，不會配置一份與整個 mesh 同大的 element-coordinate copy。
 
 `holes` 使用與 area 相同的 face dictionary：
 
@@ -492,9 +637,36 @@ Area selection 以完整 2D quadrilateral element 為單位；元素四個角都
 ]
 ```
 
+Area `holes` 若提供，必須是 list/tuple，且每一項都是 selector mapping。
+Iterator/generator 會被拒絕；這避免同一份輸入在 geometry preflight 被消耗後，
+runtime classification 看見不同或空的 holes。
+
 ### 6.5 Area metals
 
 這裡的 metal dictionaries 屬於 3D material assignment schema，與 `data_structure.Metal` 是不同層次的資料。
+
+`metals` 若提供，必須是 list/tuple，且每一項都是 mapping。共通 schema 為：
+
+| Metal type | 必要欄位 |
+| --- | --- |
+| `NORMAL` | non-empty string `material`；numeric、非 bool、finite 且在 `[0, 100]` 內的 `density` |
+| `CONTINUE` | non-empty string `material` |
+| `CONVERT` | non-empty string `material` 與 `material_o` |
+
+`type` 是 case-sensitive discriminator，只接受 exact uppercase `NORMAL`、
+`CONTINUE`、`CONVERT`。未知或 lowercase type、缺少 material/material_o、
+`NORMAL` 缺少或提供 non-numeric density，以及 `NaN`、`inf`、負值或大於 `100`
+的 density 都會在
+任何 mesh mutation／3D allocation 前 fail closed。它們不會被忽略，也不會讓
+未匹配 elements 靜默退回 area base material。
+
+每個 metal 的 `ranges` 與 `holes` 若提供，也必須是 list/tuple，且每一項都是
+selector mapping；不接受一次性 iterator/generator。
+
+`EMPTY` 是內部保留的 component label（id `0`），代表不產生 element。它不可作為
+area `material`、任何 metal target `material`，也不可作為 `CONVERT.material_o`。
+需要排除 footprint 時請使用 explicit area holes，而不是用 reserved label 隱式
+刪除 elements。
 
 #### NORMAL
 
@@ -510,7 +682,11 @@ Area selection 以完整 2D quadrilateral element 為單位；元素四個角都
 }
 ```
 
-`density` 是目標 area volume 的百分比。選取順序使用固定 seed，因此相同 layer/input 應可重現。
+`density` 是目標 area volume 的百分比，允許 `0` 與 `100`。選取順序使用固定
+seed，因此相同 layer/input 應可重現。
+所有 individual quad areas 與 selector area sum 都必須可有限表示。若正值有限的
+individual areas 加總超出 float64 range，build 會拋出 `OverflowError`；不會以
+`inf` 計算 density threshold 後回傳錯誤材料比例。
 
 #### CONTINUE
 
@@ -555,7 +731,29 @@ preserve_mesh2d=False
 preserve_mesh2d=True
 ```
 
-`build()` 會複製一份 nodes 給 `Dragger`，保留原始 `mesher.mesh2d.nodes`。
+`build()` 只複製一份 working nodes 給 `Dragger`，並在這份 copy 上從
+structural baseline 開始 build。原始 `mesher.mesh2d.nodes` 不會被改動。若進入
+`build()` 之前原 mesh 已套用某個 active snap state，不只 coordinates，連同
+sparse changed-node ids 與 `_snap_state_nodes` buffer ownership 都會在成功或失敗後
+原樣保留。因此 build 之後可在原 buffer 上繼續原 active-state workflow。
+
+### 6.7 Z subdivision representability
+
+layer `element_size` 是 Z 方向元素的最大尺寸，不只是偏好值。每個
+slab 在修改 node mappings 或配置 output 前，會分 chunk 驗證所有 float64
+Z planes：
+
+- `begin < end`，且所有 planes 有限、嚴格遞增、不重複；
+- 最後 plane 精確等於 `end`；
+- 每個 interval 不超過 requested `element_size` 加上最多數個可表示
+  float64 steps 的算術 allowance；topology order 本身沒有容差；
+- output count 不得超過 int32 ids/connectivity capacity。
+- simple full-domain capacity reservation 也必須先完成上述所有 Z-plane proof，
+  才能配置 final arrays。
+
+若絕對 Z 太大使 `element_size` 小於 float64 resolution、subdivision ratio 溢位，
+或任一 planes 會重合/反轉，`build()` 會 fail closed，不會產生 zero-volume
+hexahedra。
 
 ## 7. 輸出資料格式
 
@@ -629,6 +827,14 @@ snap_rules_by_z = mesher.get_snap_rules()
 restore_rules_by_z = mesher.get_restore_rules()
 ```
 
+兩個 getters 都回傳 deep copies，包含內層 rule dictionaries；修改回傳值不會改動
+mesher 的 validated plan。`mesher.faces`、`mesher.rails`、
+`mesher.snap_rules_by_z` 與 `mesher.restore_rules_by_z` 則應視為 read-only by
+contract。直接修改這些 public objects 不會成為合法設定，而會使 pattern integrity
+signature 不一致；後續受 integrity 保護的 snap、mesh 或 build 操作會拒絕，
+rule map 仍存在時 getters 在回傳前也會驗證。要變更幾何或 rules，必須重新執行
+`set_pattern_obj()`／`_set_pattern()`。
+
 取得特定 Z：
 
 ```python
@@ -661,6 +867,11 @@ rule["z"] == rule["z_top"]
 rule["target_coord"] == rule["rail_coord"]
 ```
 
+`restore_rules_by_z` 是以 feature top Z 索引的生命週期 metadata，可用於列舉完整
+layer boundaries。`apply_snap_rules_at_z()` 不會將它放入另一個執行佇列；實際執行是
+先恢復上一 managed state 曾改動的 nodes，再套用查詢 Z 的所有 active
+snap rules。
+
 ### 7.4 `apply_snap_rules_at_z()`
 
 ```python
@@ -678,6 +889,18 @@ touched_count, node_ids = mesher.apply_snap_rules_at_z(
 
 這個方法會直接修改 nodes array。
 
+active condition 為兩端包含：
+
+```text
+z_bottom <= z <= z_top
+```
+
+所以查詢 `top_z` 時 feature 仍在；查詢任一嚴格大於 `top_z` 的 Z 時，
+它就不再 active 並回到 structural baseline。結果只由查詢 Z 決定，不依賴
+之前呼叫的 Z 順序。`eps` 預設為 `0.0`，代表 exact event lookup；若 caller
+明確傳入正容差，它只用來解析查詢 Z 到唯一相鄰 event，不會合併或
+改寫內部 event keys。同時等距於兩個 events 會被拒絕為 ambiguous。
+
 ### 7.5 `Mesh2D`
 
 ```python
@@ -687,6 +910,7 @@ mesh2d = mesher.mesh_checkerboard()
 ```text
 mesh2d.nodes     shape (n_nodes, 3), float64
 mesh2d.elements  shape (n_elements, 4), int32
+mesh2d.metadata  optional structured topology mapping
 ```
 
 node：
@@ -702,6 +926,28 @@ quadrilateral connectivity：
 ```python
 [bottom_left, bottom_right, top_right, top_left]
 ```
+
+內建 BOX generator 的 `mesh2d.metadata` 為已驗證的 `STRUCTURED_BOX` mapping。
+若 caller 將 mesh arrays 或 axes 另作修改，不可沿用過時 metadata；之後再以
+`mesh_assignment()` 指派時，mesher 會重新 exact 驗證它與 arrays 是否一致。
+
+成功 generation／assignment 後的 ownership contract：
+
+- `mesh2d.nodes` 保持 writable，僅供 `apply_snap_rules_at_z()` 與
+  `reset_snap_state()` 做 managed coordinate changes。
+- `mesh2d.elements` 及 rail/node、node/element adjacency 等 structural index
+  arrays 會設成 read-only，普通 in-place mutation 會立即失敗。
+- mesher 記錄 nodes/elements 的 authoritative identity、layout 與 baseline
+  digest，也記錄 structural index layout/digest。`build()` 會先回到可驗證的
+  baseline，再用 bounded chunks hash nodes/connectivity；array replacement、強制
+  解鎖後的 mutation，或未受管理的 node edit 都會 fail closed。
+- active snap state 同時記錄 changed ids 與 exact expected target values；baseline
+  digest 只會虛擬代回已驗證的 managed values。直接修改一個已 snap node 不會被
+  restore 動作遮蔽，仍會在任何 3D allocation 前拒絕。
+
+需要編輯 custom mesh 時，請複製 arrays、完成編輯後重新呼叫
+`mesh_assignment()`。不要替換已建立 index 的 `mesh2d.nodes`／`elements`，也不要
+直接改 `rail_node_index` 等 internal structural mappings。
 
 ### 7.6 `Dragger`
 

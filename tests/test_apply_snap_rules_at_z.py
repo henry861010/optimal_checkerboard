@@ -13,6 +13,73 @@ from optimal_checkerboard import OptimalMesh25D
 
 
 class TestApplySnapRulesAtZ(unittest.TestCase):
+    def test_snap_state_cannot_switch_node_buffers_before_reset(self):
+        """Sparse restore ids must never leak between independent arrays."""
+        faces = [
+            {
+                "type": "LINE",
+                "dim": [1.0, 0.0, 1.0, 5.0],
+                "bottom_z": 0.0,
+                "top_z": 1.0,
+            },
+            {
+                "type": "LINE",
+                "dim": [1.5, 10.0, 1.5, 15.0],
+                "bottom_z": 0.0,
+                "top_z": 1.0,
+            },
+        ]
+        mesher = OptimalMesh25D()
+        mesher._set_pattern(
+            faces,
+            element_size=5.0,
+            ratio=0.2,
+            mesh_domain={"type": "BOX", "dim": [0.0, 0.0, 3.0, 15.0]},
+        )
+        mesh = mesher.mesh_checkerboard()
+        baseline = mesh.nodes.copy()
+        external = baseline.copy()
+
+        self.assertGreater(mesher.apply_snap_rules_at_z(0.0), 0)
+        with self.assertRaisesRegex(RuntimeError, "different node buffer"):
+            mesher.apply_snap_rules_at_z(2.0, nodes=external)
+
+        np.testing.assert_array_equal(external, baseline)
+        self.assertGreater(mesher.reset_snap_state(), 0)
+        self.assertEqual(mesher.apply_snap_rules_at_z(2.0, nodes=external), 0)
+        np.testing.assert_array_equal(mesh.nodes, baseline)
+
+    def test_default_z_matching_never_starts_a_nearby_event_early(self):
+        """Physical mutation uses exact z topology unless explicitly opted in."""
+        event_z = 1.0000005
+        faces = [
+            {
+                "type": "LINE",
+                "dim": [1.0, 0.0, 1.0, 5.0],
+                "bottom_z": event_z,
+                "top_z": event_z,
+            },
+            {
+                "type": "LINE",
+                "dim": [1.5, 10.0, 1.5, 15.0],
+                "bottom_z": 2.0,
+                "top_z": 2.0,
+            },
+        ]
+        mesher = OptimalMesh25D()
+        mesher._set_pattern(
+            faces,
+            element_size=5.0,
+            ratio=0.2,
+            mesh_domain={"type": "BOX", "dim": [0.0, 0.0, 3.0, 15.0]},
+        )
+        mesh = mesher.mesh_checkerboard()
+        baseline = mesh.nodes.copy()
+
+        self.assertEqual(mesher.apply_snap_rules_at_z(1.0), 0)
+        np.testing.assert_array_equal(mesh.nodes, baseline)
+        self.assertGreater(mesher.apply_snap_rules_at_z(event_z), 0)
+
     def test_apply_snap_rules_requires_mesh(self):
         """Verify snap rules cannot be applied before a mesh is indexed."""
         faces = [
@@ -438,6 +505,51 @@ class TestApplySnapRulesAtZ(unittest.TestCase):
             ),
             3,
         )
+
+    def test_sub_picometer_snap_is_tracked_and_exactly_restored(self):
+        """A real displacement below old isclose tolerances is not lost."""
+        second_target = 1e-12
+        faces = [
+            {
+                "type": "LINE",
+                "dim": [0.0, 0.0, 0.0, 1.0],
+                "bottom_z": 0.0,
+                "top_z": 0.0,
+            },
+            {
+                "type": "LINE",
+                "dim": [second_target, 0.0, second_target, 1.0],
+                "bottom_z": 2.0,
+                "top_z": 2.0,
+            },
+        ]
+        mesher = OptimalMesh25D()
+        mesher._set_pattern(
+            faces,
+            element_size=1.0,
+            ratio=1.0,
+            mesh_domain={"type": "BOX", "dim": [-1.0, 0.0, 1.0, 1.0]},
+        )
+        mesh = mesher.mesh_checkerboard()
+        first_rule = mesher.snap_rules_by_z[0.0][0]
+        rail_coord = float(
+            mesher.rails["x"][first_rule["rail_id"]]["coord"]
+        )
+        self.assertEqual(rail_coord, 0.5e-12)
+
+        touched, node_ids = mesher.apply_snap_rules_at_z(
+            0.0,
+            return_touched_node_ids=True,
+        )
+        self.assertGreater(touched, 0)
+        self.assertTrue(np.all(mesh.nodes[node_ids, 0] == 0.0))
+
+        restored, restored_ids = mesher.apply_snap_rules_at_z(
+            1.0,
+            return_touched_node_ids=True,
+        )
+        self.assertGreater(restored, 0)
+        self.assertTrue(np.all(mesh.nodes[restored_ids, 0] == rail_coord))
 
 
 if __name__ == "__main__":

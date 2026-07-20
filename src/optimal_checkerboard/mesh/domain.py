@@ -1,6 +1,7 @@
 """Resolve checkerboard mesh domains from geometry footprints."""
 
 from copy import deepcopy
+import math
 from numbers import Real
 
 
@@ -28,10 +29,13 @@ def mesh_domain_from_face(face_type, dim):
     if face_type == "CYLINDER":
         cylinder_dim = _cylinder_dim(dim)
         cx, cy, radius = cylinder_dim
+        bbox = [cx - radius, cy - radius, cx + radius, cy + radius]
+        if not all(math.isfinite(value) for value in bbox):
+            raise ValueError("CYLINDER mesh domain bounds must be finite")
         return {
             "type": "CYLINDER",
             "dim": cylinder_dim,
-            "bbox": [cx - radius, cy - radius, cx + radius, cy + radius],
+            "bbox": bbox,
         }
 
     if face_type == "POLYGON":
@@ -59,6 +63,24 @@ def normalize_mesh_domain(domain):
     if dim is None:
         raise ValueError(f"{domain_type} mesh_domain must provide dim")
     return mesh_domain_from_face(domain_type, dim)
+
+
+def mesh_domain_pinned_coordinates(domain):
+    """Return immutable axis coordinates imposed by a BOX mesh boundary.
+
+    The shared-rail planner can use this metadata to keep the external BOX
+    boundary out of movable rail groups.  Bounding boxes for CYLINDER and
+    POLYGON domains are not physical axis-aligned boundary lines, so those
+    domain types intentionally return empty coordinate lists.
+    """
+    domain = normalize_mesh_domain(domain)
+    if domain is None:
+        return {"x": [], "y": []}
+    if domain["type"] != "BOX":
+        return {"x": [], "y": []}
+
+    xmin, ymin, xmax, ymax = domain["bbox"]
+    return {"x": [xmin, xmax], "y": [ymin, ymax]}
 
 
 def _normalize_type(face_type):
@@ -110,6 +132,9 @@ def _validate_positive_bounds(bounds, domain_type):
 
 
 def _number(value):
-    if not isinstance(value, Real):
-        raise ValueError("mesh domain coordinates must be numeric")
-    return float(value)
+    if isinstance(value, bool) or not isinstance(value, Real):
+        raise ValueError("mesh domain coordinates must be finite numbers")
+    value = float(value)
+    if not math.isfinite(value):
+        raise ValueError("mesh domain coordinates must be finite numbers")
+    return value

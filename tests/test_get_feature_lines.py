@@ -22,7 +22,7 @@ class TestGetFeatureLines(unittest.TestCase):
             },
             {
                 "type": "LINE",
-                "dim": [1.5, 6, 1.5, 11],
+                "dim": [1.5, 7, 1.5, 11],
                 "bottom_z": 0,
                 "top_z": 0,
             },

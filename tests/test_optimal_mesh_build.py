@@ -1,6 +1,7 @@
 import os
 import sys
 import unittest
+from unittest import mock
 
 SRC_ROOT = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "src")
@@ -49,6 +50,602 @@ def _build_zero_copy_mesher():
 
 
 class TestOptimalMeshBuild(unittest.TestCase):
+    @staticmethod
+    def _integrity_mesher():
+        mesher = OptimalMesh25D()
+        mesher._set_pattern(
+            [{
+                "type": "BOX",
+                "dim": [0.0, 0.0, 3.0, 3.0],
+                "bottom_z": 0.0,
+                "top_z": 1.0,
+            }],
+            element_size=1.0,
+            ratio=0.0,
+            mesh_domain={"type": "BOX", "dim": [0.0, 0.0, 3.0, 3.0]},
+        )
+        mesher.mesh_checkerboard()
+        return mesher
+
+    @staticmethod
+    def _integrity_stack():
+        return [[
+            {
+                "z": 0.0,
+                "areas": [{
+                    "type": "BOX",
+                    "dim": [0.0, 0.0, 3.0, 3.0],
+                    "material": "CORE",
+                }],
+                "element_size": 1.0,
+            },
+            {"z": 1.0},
+        ]]
+
+    def test_build_rejects_replaced_connectivity_after_indexing(self):
+        mesher = self._integrity_mesher()
+        mesher.mesh2d.elements = np.delete(
+            mesher.mesh2d.elements,
+            4,
+            axis=0,
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "arrays were replaced"):
+            mesher.build(self._integrity_stack())
+
+    def test_replaced_arrays_are_not_normalized_before_build_rejects(self):
+        mesher = self._integrity_mesher()
+        replacement_nodes = mesher.mesh2d.nodes.astype(np.float32)
+        replacement_elements = mesher.mesh2d.elements.astype(np.int64)
+        mesher.mesh2d.nodes = replacement_nodes
+        mesher.mesh2d.elements = replacement_elements
+
+        with self.assertRaisesRegex(RuntimeError, "arrays were replaced"):
+            mesher.build(self._integrity_stack())
+
+        self.assertIs(mesher.mesh2d.nodes, replacement_nodes)
+        self.assertIs(mesher.mesh2d.elements, replacement_elements)
+        self.assertEqual(mesher.mesh2d.nodes.dtype, np.float32)
+        self.assertEqual(mesher.mesh2d.elements.dtype, np.int64)
+
+    def test_build_rejects_in_place_connectivity_mutation(self):
+        mesher = self._integrity_mesher()
+        self.assertFalse(mesher.mesh2d.elements.flags.writeable)
+        mesher.mesh2d.elements.setflags(write=True)
+        mesher.mesh2d.elements[4] = mesher.mesh2d.elements[0]
+
+        with self.assertRaisesRegex(RuntimeError, "changed after validation"):
+            mesher.build(self._integrity_stack())
+
+    def test_build_rejects_unmanaged_in_place_node_mutation(self):
+        mesher = self._integrity_mesher()
+        center_id = int(
+            np.flatnonzero(
+                (mesher.mesh2d.nodes[:, 0] == 1.0)
+                & (mesher.mesh2d.nodes[:, 1] == 1.0)
+            )[0]
+        )
+        mesher.mesh2d.nodes[center_id, 0] += 0.125
+
+        with self.assertRaisesRegex(RuntimeError, "changed after validation"):
+            mesher.build(self._integrity_stack())
+
+    def test_preserved_build_rejects_corrupted_managed_snap_coordinate(self):
+        mesher = _build_zero_copy_mesher()
+        mesher.apply_snap_rules_at_z(0.0)
+        node_id = int(mesher._current_changed_node_ids["x"][0])
+        mesher.mesh2d.nodes[node_id, 0] += 0.125
+        corrupted = mesher.mesh2d.nodes.copy()
+
+        with self.assertRaisesRegex(RuntimeError, "outside managed snap"):
+            mesher.build(
+                [[
+                    {"z": 0.0, "areas": [_area()], "element_size": 10.0},
+                    {"z": 10.0},
+                ]],
+                preserve_mesh2d=True,
+            )
+
+        np.testing.assert_array_equal(mesher.mesh2d.nodes, corrupted)
+
+    def test_preserved_build_does_not_hide_unmanaged_rail_edit(self):
+        mesher = _build_zero_copy_mesher()
+        rail = mesher.rail_node_index["x"][0]
+        node_id = int(rail["node_ids"][0])
+        mesher.mesh2d.nodes[node_id, 0] += 0.125
+        corrupted = mesher.mesh2d.nodes.copy()
+
+        with self.assertRaisesRegex(RuntimeError, "changed after validation"):
+            mesher.build(
+                [[
+                    {"z": 0.0, "areas": [_area()], "element_size": 10.0},
+                    {"z": 10.0},
+                ]],
+                preserve_mesh2d=True,
+            )
+
+        np.testing.assert_array_equal(mesher.mesh2d.nodes, corrupted)
+
+    def test_build_rejects_fail_open_material_schemas(self):
+        invalid_metals = [
+            {"type": "BAD", "material": "M1"},
+            {"type": "normal", "material": "M1", "density": 50.0},
+            {"type": "NORMAL", "material": "M1", "density": np.nan},
+            {"type": "NORMAL", "material": "M1", "density": np.inf},
+            {"type": "NORMAL", "material": "M1", "density": -1.0},
+            {"type": "NORMAL", "material": "M1", "density": 100.1},
+            {"type": "NORMAL", "material": "M1", "density": "50"},
+            {"type": "NORMAL", "material": "M1"},
+            {"type": "CONTINUE", "material": ""},
+            {"type": "CONVERT", "material": "M2"},
+            {
+                "type": "CONTINUE",
+                "material": "M1",
+                "ranges": {"type": "BOX", "dim": [0.0, 0.0, 1.0, 1.0]},
+            },
+        ]
+        for metal in invalid_metals:
+            with self.subTest(metal=metal):
+                mesher = self._integrity_mesher()
+                stack = self._integrity_stack()
+                stack[0][0]["areas"][0]["metals"] = [metal]
+
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "type must|density must|material.*must|ranges must",
+                ):
+                    mesher.build(stack)
+
+    def test_build_requires_base_area_material_label(self):
+        mesher = self._integrity_mesher()
+        stack = self._integrity_stack()
+        del stack[0][0]["areas"][0]["material"]
+
+        with self.assertRaisesRegex(ValueError, "material must"):
+            mesher.build(stack)
+
+    def test_build_rejects_reserved_empty_material_labels(self):
+        for field in ("area", "metal", "material_o"):
+            with self.subTest(field=field):
+                mesher = self._integrity_mesher()
+                stack = self._integrity_stack()
+                area = stack[0][0]["areas"][0]
+                if field == "area":
+                    area["material"] = "EMPTY"
+                elif field == "metal":
+                    area["metals"] = [{
+                        "type": "NORMAL",
+                        "material": "EMPTY",
+                        "density": 50.0,
+                    }]
+                else:
+                    area["metals"] = [{
+                        "type": "CONVERT",
+                        "material": "M2",
+                        "material_o": "EMPTY",
+                    }]
+
+                with self.assertRaisesRegex(ValueError, "reserved EMPTY"):
+                    mesher.build(stack, preserve_mesh2d=True)
+
+    def test_build_rejects_one_shot_area_holes(self):
+        mesher = self._integrity_mesher()
+        stack = self._integrity_stack()
+        hole = {"type": "BOX", "dim": [1.0, 1.0, 2.0, 2.0]}
+        stack[0][0]["areas"][0]["holes"] = (
+            item for item in [hole]
+        )
+
+        with self.assertRaisesRegex(ValueError, "holes must"):
+            mesher.build(stack)
+
+    def test_build_rejects_noncanonical_selector_type_before_mutation(self):
+        mesher = self._integrity_mesher()
+        stack = self._integrity_stack()
+        stack[0][0]["areas"][0]["type"] = "box"
+        baseline = mesher.mesh2d.nodes.copy()
+
+        with self.assertRaisesRegex(ValueError, "exactly BOX or POLYGON"):
+            mesher.build(stack)
+
+        np.testing.assert_array_equal(mesher.mesh2d.nodes, baseline)
+
+    def test_build_accepts_explicit_none_metals_as_empty(self):
+        mesher = self._integrity_mesher()
+        stack = self._integrity_stack()
+        stack[0][0]["areas"][0]["metals"] = None
+
+        dragger = mesher.build(stack, preserve_mesh2d=True)
+
+        self.assertEqual(dragger.element_num, 9)
+
+    def test_build_options_require_actual_booleans(self):
+        for option_name in ("preserve_mesh2d", "allow_independent_bodies"):
+            with self.subTest(option_name=option_name):
+                mesher = self._integrity_mesher()
+                options = {option_name: "False"}
+
+                with self.assertRaisesRegex(ValueError, "must be a boolean"):
+                    mesher.build(self._integrity_stack(), **options)
+
+    def test_plain_full_domain_layers_reserve_exact_final_capacity(self):
+        mesher = self._integrity_mesher()
+        area = {
+            "type": "BOX",
+            "dim": [0.0, 0.0, 3.0, 3.0],
+            "material": "CORE",
+        }
+        stack = [
+            {
+                "z": float(z_value),
+                "areas": [area],
+                "element_size": 1.0,
+            }
+            for z_value in range(5)
+        ] + [{"z": 5.0}]
+
+        dragger = mesher.build([stack], preserve_mesh2d=True)
+
+        self.assertEqual(dragger.element_num, 45)
+        self.assertEqual(dragger.node_num, 96)
+        self.assertEqual(len(dragger.elements), dragger.element_num)
+        self.assertEqual(len(dragger.nodes), dragger.node_num)
+
+    def test_full_domain_capacity_proves_z_planes_before_allocating(self):
+        mesher = self._integrity_mesher()
+        stack = [[
+            {
+                "z": 1.0e16,
+                "areas": [_area()],
+                "element_size": 1.0,
+            },
+            {"z": 1.0e16 + 2.0},
+        ]]
+
+        with mock.patch.object(
+            Dragger,
+            "_pre_allocate_elements",
+            side_effect=AssertionError("allocated elements before z proof"),
+        ) as element_allocate, mock.patch.object(
+            Dragger,
+            "_pre_allocate_nodes",
+            side_effect=AssertionError("allocated nodes before z proof"),
+        ) as node_allocate:
+            with self.assertRaisesRegex(ValueError, "float64 z resolution"):
+                mesher.build(stack, preserve_mesh2d=True)
+
+        element_allocate.assert_not_called()
+        node_allocate.assert_not_called()
+
+    def test_failed_build_rolls_back_material_volume_diagnostic(self):
+        mesher = self._integrity_mesher()
+        metal = {
+            "type": "NORMAL",
+            "material": "M1",
+            "density": 0.0,
+            "ranges": [{"type": "BOX", "dim": [0.0, 0.0, 3.0, 3.0]}],
+        }
+        first_area = _area()
+        first_area["metals"] = [metal]
+        stack = [[
+            {"z": 0.0, "areas": [first_area], "element_size": 1.0},
+            {"z": 1.0, "areas": [_area(), _area()], "element_size": 1.0},
+            {"z": 2.0},
+        ]]
+
+        with self.assertRaisesRegex(ValueError, "areas overlap"):
+            mesher.build(stack, preserve_mesh2d=True)
+
+        self.assertNotIn("volumn", metal)
+
+    def test_normal_selector_area_overflow_fails_closed(self):
+        mesher = OptimalMesh25D()
+        domain = [0.0, 0.0, 2.0e154, 1.0e154]
+        mesher._set_pattern(
+            [{
+                "type": "BOX",
+                "dim": domain,
+                "bottom_z": 0.0,
+                "top_z": 1.0,
+            }],
+            element_size=4.0e153,
+            ratio=0.0,
+            mesh_domain={"type": "BOX", "dim": domain},
+        )
+        mesher.mesh_checkerboard()
+        metal = {
+            "type": "NORMAL",
+            "material": "M1",
+            "density": 50.0,
+            "ranges": [{"type": "BOX", "dim": domain}],
+        }
+        area = {
+            "type": "BOX",
+            "dim": domain,
+            "material": "CORE",
+            "metals": [metal],
+        }
+
+        with self.assertRaisesRegex(OverflowError, "total area"):
+            mesher.build(
+                [[
+                    {"z": 0.0, "areas": [area], "element_size": 1.0},
+                    {"z": 1.0},
+                ]],
+                preserve_mesh2d=True,
+            )
+
+        self.assertNotIn("volumn", metal)
+
+    def test_reset_rejects_changed_structural_rail_metadata(self):
+        mesher = self._integrity_mesher()
+        mesher.rail_node_index["x"][0]["coord"] += 0.125
+
+        with self.assertRaisesRegex(RuntimeError, "structural indices"):
+            mesher.reset_snap_state()
+
+    def test_build_rejects_area_boundary_that_cuts_through_a_mesh_cell(self):
+        mesher = OptimalMesh25D()
+        mesher._set_pattern(
+            [{
+                "type": "BOX",
+                "dim": [0.0, 0.0, 10.0, 10.0],
+                "bottom_z": 0.0,
+                "top_z": 2.0,
+            }],
+            element_size=10.0,
+            ratio=0.0,
+            mesh_domain={"type": "BOX", "dim": [0.0, 0.0, 10.0, 10.0]},
+        )
+        mesh = mesher.mesh_checkerboard()
+        baseline = mesh.nodes.copy()
+
+        with self.assertRaisesRegex(ValueError, "not an active exact"):
+            mesher.build(
+                [[
+                    {
+                        "z": 0.0,
+                        "areas": [{
+                            "type": "BOX",
+                            "dim": [0.0, 0.0, 5.0, 10.0],
+                            "material": "CORE",
+                        }],
+                        "element_size": 1.0,
+                    },
+                    {"z": 1.0},
+                ]]
+            )
+
+        np.testing.assert_array_equal(mesh.nodes, baseline)
+
+    def test_build_rejects_unrepresented_hole_boundary(self):
+        mesher = OptimalMesh25D()
+        mesher._set_pattern(
+            [{
+                "type": "BOX",
+                "dim": [0.0, 0.0, 10.0, 10.0],
+                "bottom_z": 0.0,
+                "top_z": 2.0,
+            }],
+            element_size=10.0,
+            ratio=0.0,
+            mesh_domain={"type": "BOX", "dim": [0.0, 0.0, 10.0, 10.0]},
+        )
+        mesher.mesh_checkerboard()
+        area = {
+            "type": "BOX",
+            "dim": [0.0, 0.0, 10.0, 10.0],
+            "material": "CORE",
+            "holes": [{"type": "BOX", "dim": [2.0, 2.0, 8.0, 8.0]}],
+        }
+
+        with self.assertRaisesRegex(ValueError, "not an active exact"):
+            mesher.build(
+                [[
+                    {"z": 0.0, "areas": [area], "element_size": 1.0},
+                    {"z": 1.0},
+                ]]
+            )
+
+    def test_build_boundary_must_exist_throughout_the_whole_slab(self):
+        faces = [
+            {
+                "type": "LINE",
+                "dim": [1.0, 0.0, 1.0, 1.0],
+                "bottom_z": 0.0,
+                "top_z": 1.0,
+            },
+            {
+                "type": "LINE",
+                "dim": [1.5, 0.0, 1.5, 1.0],
+                "bottom_z": 2.0,
+                "top_z": 3.0,
+            },
+        ]
+        mesher = OptimalMesh25D()
+        mesher._set_pattern(
+            faces,
+            element_size=1.0,
+            ratio=1.0,
+            mesh_domain={"type": "BOX", "dim": [0.0, 0.0, 3.0, 1.0]},
+        )
+        mesher.mesh_checkerboard()
+        child_area = {
+            "type": "BOX",
+            "dim": [0.0, 0.0, 1.0, 1.0],
+            "material": "CHILD",
+        }
+
+        with self.assertRaisesRegex(ValueError, "throughout z"):
+            mesher.build(
+                [[
+                    {"z": 1.0, "areas": [child_area], "element_size": 1.0},
+                    {"z": 2.0},
+                ]]
+            )
+
+    def test_build_rejects_baseline_rail_at_displaced_span_endpoint(self):
+        """A moved closed-span endpoint cannot masquerade as a safe rail."""
+        faces = [
+            {
+                "type": "LINE",
+                "dim": [1.0, 0.0, 1.0, 1.0],
+                "bottom_z": 0.0,
+                "top_z": 1.0,
+            },
+            {
+                "type": "LINE",
+                "dim": [1.5, 1.0, 1.5, 2.0],
+                "bottom_z": 2.0,
+                "top_z": 3.0,
+            },
+            {
+                "type": "LINE",
+                "dim": [0.0, 1.0, 3.0, 1.0],
+                "bottom_z": 0.0,
+                "top_z": 1.0,
+            },
+            {
+                "type": "LINE",
+                "dim": [0.0, 2.0, 3.0, 2.0],
+                "bottom_z": 0.0,
+                "top_z": 1.0,
+            },
+        ]
+        mesher = OptimalMesh25D()
+        mesher._set_pattern(
+            faces,
+            element_size=1.0,
+            ratio=1.0,
+            mesh_domain={"type": "BOX", "dim": [0.0, 0.0, 3.0, 3.0]},
+        )
+        mesh = mesher.mesh_checkerboard()
+        baseline = mesh.nodes.copy()
+        self.assertIsNone(mesher.rail_optimization_fallback)
+        self.assertEqual(mesher.rails["x"][0]["coord"], 1.25)
+
+        with self.assertRaisesRegex(ValueError, "throughout z"):
+            mesher.build(
+                [[
+                    {
+                        "z": 0.0,
+                        "areas": [{
+                            "type": "BOX",
+                            "dim": [1.25, 1.0, 3.0, 2.0],
+                            "material": "CORE",
+                        }],
+                        "element_size": 1.0,
+                    },
+                    {"z": 1.0},
+                ]]
+            )
+
+        np.testing.assert_array_equal(mesh.nodes, baseline)
+
+    def test_build_applies_snap_state_to_the_final_sentinel_plane(self):
+        faces = [
+            {
+                "type": "LINE",
+                "dim": [1.0, 0.0, 1.0, 1.0],
+                "bottom_z": 1.0,
+                "top_z": 2.0,
+            },
+            {
+                "type": "LINE",
+                "dim": [1.5, 0.0, 1.5, 1.0],
+                "bottom_z": 3.0,
+                "top_z": 4.0,
+            },
+        ]
+        mesher = OptimalMesh25D()
+        mesher._set_pattern(
+            faces,
+            element_size=1.0,
+            ratio=1.0,
+            mesh_domain={"type": "BOX", "dim": [0.0, 0.0, 3.0, 1.0]},
+        )
+        mesher.mesh_checkerboard()
+        domain_area = {
+            "type": "BOX",
+            "dim": [0.0, 0.0, 3.0, 1.0],
+            "material": "CORE",
+        }
+
+        dragger = mesher.build(
+            [[
+                {"z": 0.0, "areas": [domain_area], "element_size": 1.0},
+                {"z": 1.0},
+            ]],
+            preserve_mesh2d=True,
+        )
+        top_nodes = dragger.nodes[:dragger.node_num]
+        top_nodes = top_nodes[top_nodes[:, 2] == 1.0]
+
+        self.assertTrue(np.any(top_nodes[:, 0] == 1.0))
+        self.assertFalse(np.any(top_nodes[:, 0] == 1.25))
+
+    def test_multiple_stacks_require_explicit_independent_body_opt_in(self):
+        mesher = _build_zero_copy_mesher()
+        stack = [
+            {"z": 0.0, "areas": [_area()], "element_size": 1.0},
+            {"z": 10.0},
+        ]
+
+        with self.assertRaisesRegex(ValueError, "non-conformal"):
+            mesher.build([stack, stack], preserve_mesh2d=True)
+
+    def test_build_rejects_a_stack_that_skips_pattern_z_events(self):
+        """A slab may not cross a feature start or end without a boundary."""
+        faces = [
+            {
+                "type": "LINE",
+                "dim": [1.0, 0.0, 1.0, 3.0],
+                "bottom_z": 0.0,
+                "top_z": 4.0,
+            },
+            {
+                "type": "LINE",
+                "dim": [1.5, 0.0, 1.5, 3.0],
+                "bottom_z": 6.0,
+                "top_z": 10.0,
+            },
+        ]
+        mesher = OptimalMesh25D()
+        mesher._set_pattern(
+            faces,
+            element_size=5.0,
+            ratio=0.2,
+            mesh_domain={"type": "BOX", "dim": [0.0, 0.0, 3.0, 3.0]},
+        )
+        mesh = mesher.mesh_checkerboard()
+        baseline = mesh.nodes.copy()
+
+        with self.assertRaisesRegex(ValueError, "pattern z events"):
+            mesher.build(
+                [[
+                    {"z": 0.0, "areas": [_area()], "element_size": 10.0},
+                    {"z": 10.0},
+                ]]
+            )
+
+        np.testing.assert_array_equal(mesh.nodes, baseline)
+
+    def test_failed_build_restores_the_structural_2d_baseline(self):
+        """A late layer error must not leave the zero-copy mesh snapped."""
+        mesher = _build_zero_copy_mesher()
+        baseline = mesher.mesh2d.nodes.copy()
+
+        with self.assertRaisesRegex(ValueError, "element_size"):
+            mesher.build(
+                [[
+                    {"z": 0.0, "areas": [_area()], "element_size": 10.0},
+                    {"z": 10.0, "areas": [_area()], "element_size": 0.0},
+                    {"z": 20.0},
+                ]]
+            )
+
+        np.testing.assert_array_equal(mesher.mesh2d.nodes, baseline)
+
     def test_build_returns_dragger_and_mutates_mesh2d_by_default(self):
         mesher = _build_zero_copy_mesher()
         obj_list = [
@@ -91,6 +688,93 @@ class TestOptimalMeshBuild(unittest.TestCase):
         }
         self.assertIn(1.0, x_values)
         self.assertNotIn(1.25, x_values)
+
+    def test_preserve_mesh2d_keeps_an_existing_active_snap_state(self):
+        mesher = _build_zero_copy_mesher()
+        mesher.apply_snap_rules_at_z(0.0)
+        before = mesher.mesh2d.nodes.copy()
+        managed_before = {
+            axis: node_ids.copy()
+            for axis, node_ids in mesher._current_changed_node_ids.items()
+        }
+
+        mesher.build(
+            [[
+                {"z": 0.0, "areas": [_area()], "element_size": 10.0},
+                {"z": 10.0},
+            ]],
+            preserve_mesh2d=True,
+        )
+
+        np.testing.assert_array_equal(mesher.mesh2d.nodes, before)
+        for axis in ("x", "y"):
+            np.testing.assert_array_equal(
+                mesher._current_changed_node_ids[axis],
+                managed_before[axis],
+            )
+        self.assertIs(mesher._snap_state_nodes, mesher.mesh2d.nodes)
+
+    def test_failed_preserved_build_restores_existing_active_snap_state(self):
+        mesher = _build_zero_copy_mesher()
+        mesher.apply_snap_rules_at_z(0.0)
+        before = mesher.mesh2d.nodes.copy()
+        invalid_area = _area()
+        del invalid_area["material"]
+
+        with self.assertRaisesRegex(ValueError, "material must"):
+            mesher.build(
+                [[
+                    {"z": 0.0, "areas": [_area()], "element_size": 10.0},
+                    {
+                        "z": 10.0,
+                        "areas": [invalid_area],
+                        "element_size": 10.0,
+                    },
+                    {"z": 20.0},
+                ]],
+                preserve_mesh2d=True,
+            )
+
+        np.testing.assert_array_equal(mesher.mesh2d.nodes, before)
+        self.assertIs(mesher._snap_state_nodes, mesher.mesh2d.nodes)
+
+    def test_preserved_state_survives_dragger_constructor_failure(self):
+        mesher = _build_zero_copy_mesher()
+        mesher.apply_snap_rules_at_z(0.0)
+        before = mesher.mesh2d.nodes.copy()
+        ids_before = {
+            axis: values.copy()
+            for axis, values in mesher._current_changed_node_ids.items()
+        }
+        values_before = {
+            axis: values.copy()
+            for axis, values in mesher._current_changed_node_values.items()
+        }
+
+        with mock.patch(
+            "optimal_checkerboard.mesher.Dragger",
+            side_effect=MemoryError("synthetic allocation failure"),
+        ):
+            with self.assertRaises(MemoryError):
+                mesher.build(
+                    [[
+                        {"z": 0.0, "areas": [_area()], "element_size": 10.0},
+                        {"z": 10.0},
+                    ]],
+                    preserve_mesh2d=True,
+                )
+
+        np.testing.assert_array_equal(mesher.mesh2d.nodes, before)
+        for axis in ("x", "y"):
+            np.testing.assert_array_equal(
+                mesher._current_changed_node_ids[axis],
+                ids_before[axis],
+            )
+            np.testing.assert_array_equal(
+                mesher._current_changed_node_values[axis],
+                values_before[axis],
+            )
+        self.assertIs(mesher._snap_state_nodes, mesher.mesh2d.nodes)
 
     def test_build_syncs_snapped_top_layer_3d_nodes(self):
         faces = [
@@ -138,7 +822,7 @@ class TestOptimalMeshBuild(unittest.TestCase):
         self.assertNotIn(1.25, z11_x_values)
 
     def test_build_applies_distinct_raw_high_precision_z_events(self):
-        """Verify build resolves raw z values to separate rounded buckets."""
+        """Verify build resolves raw z values to separate exact buckets."""
         first_z = 1.23444
         second_z = 1.23446
         faces = [
@@ -235,6 +919,7 @@ class TestOptimalMeshBuild(unittest.TestCase):
         dragger = mesher.build(
             [first_stack, second_stack],
             preserve_mesh2d=True,
+            allow_independent_bodies=True,
         )
         nodes = dragger.nodes[:dragger.node_num]
         z0_x_values, counts = np.unique(

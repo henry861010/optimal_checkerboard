@@ -2,8 +2,12 @@
 
 from copy import deepcopy
 
+from optimal_checkerboard.algorithms.classify_line import (
+    _scale_aware_tolerance,
+)
 
-def snap_faces_to_shared_rails(faces, snap_rules_by_z, eps=1e-6):
+
+def snap_faces_to_shared_rails(faces, snap_rules_by_z, eps=0.0):
     """Return face copies whose snapped coordinates use shared rail defaults."""
     return [
         _snap_face_to_rail_defaults(
@@ -15,7 +19,7 @@ def snap_faces_to_shared_rails(faces, snap_rules_by_z, eps=1e-6):
     ]
 
 
-def _snap_face_to_rail_defaults(face, snap_rules_by_z, eps=1e-6):
+def _snap_face_to_rail_defaults(face, snap_rules_by_z, eps=0.0):
     """Return one face copy with snap-rule coordinates on shared rails."""
     face_dup = deepcopy(face)
     face_type = face["type"]
@@ -55,7 +59,7 @@ def _snap_box_dim_to_rail_defaults(
     bottom_z,
     top_z,
     snap_rules_by_z,
-    eps=1e-6,
+    eps=0.0,
 ):
     """Move BOX boundary coordinates to matching shared rails."""
     if len(dim) != 4:
@@ -110,7 +114,7 @@ def _snap_line_dim_to_rail_defaults(
     bottom_z,
     top_z,
     snap_rules_by_z,
-    eps=1e-6,
+    eps=0.0,
 ):
     """Move a LINE coordinate to its matching shared rail."""
     if len(dim) != 4:
@@ -143,7 +147,7 @@ def _snap_polygon_dim_to_rail_defaults(
     bottom_z,
     top_z,
     snap_rules_by_z,
-    eps=1e-6,
+    eps=0.0,
 ):
     """Move POLYGON loop vertices to matching shared rails."""
     snapped_loops = []
@@ -158,10 +162,19 @@ def _snap_polygon_dim_to_rail_defaults(
             continue
 
         point_count = len(loop)
+        closure_tol = _scale_aware_tolerance(
+            (
+                float(loop[0][0]),
+                float(loop[0][1]),
+                float(loop[-1][0]),
+                float(loop[-1][1]),
+            ),
+            requested=eps,
+        )
         has_repeated_closure = (
             point_count > 1
-            and abs(float(loop[0][0]) - float(loop[-1][0])) <= eps
-            and abs(float(loop[0][1]) - float(loop[-1][1])) <= eps
+            and abs(float(loop[0][0]) - float(loop[-1][0])) <= closure_tol
+            and abs(float(loop[0][1]) - float(loop[-1][1])) <= closure_tol
         )
         edge_point_count = (
             point_count - 1
@@ -205,18 +218,22 @@ def _snap_edge_axis_coord_to_rail_default(
     bottom_z,
     top_z,
     snap_rules_by_z,
-    eps=1e-6,
+    eps=0.0,
 ):
     """Return ``(axis, rail_coord)`` for an orthogonal edge."""
     x1, y1 = float(point1[0]), float(point1[1])
     x2, y2 = float(point2[0]), float(point2[1])
+    topology_tol = _scale_aware_tolerance(
+        (x1, y1, x2, y2),
+        requested=eps,
+    )
 
-    if abs(x1 - x2) <= eps:
+    if abs(x1 - x2) <= topology_tol:
         return (
             "x",
             _snap_edge_coord_to_rail_default(
                 "x",
-                (x1 + x2) / 2.0,
+                x1,
                 y1,
                 y2,
                 bottom_z,
@@ -225,12 +242,12 @@ def _snap_edge_axis_coord_to_rail_default(
                 eps=eps,
             ),
         )
-    if abs(y1 - y2) <= eps:
+    if abs(y1 - y2) <= topology_tol:
         return (
             "y",
             _snap_edge_coord_to_rail_default(
                 "y",
-                (y1 + y2) / 2.0,
+                y1,
                 x1,
                 x2,
                 bottom_z,
@@ -251,7 +268,7 @@ def _snap_edge_coord_to_rail_default(
     bottom_z,
     top_z,
     snap_rules_by_z,
-    eps=1e-6,
+    eps=0.0,
 ):
     """Return shared rail coord for an edge, or the original coord."""
     span_min = min(float(span_start), float(span_end))
@@ -263,15 +280,15 @@ def _snap_edge_coord_to_rail_default(
     for rule in _iter_snap_rules(snap_rules_by_z):
         if rule["axis"] != axis:
             continue
-        if abs(float(rule["target_coord"]) - coord) > eps:
+        if float(rule["target_coord"]) != coord:
             continue
-        if abs(float(rule["span_min"]) - span_min) > eps:
+        if float(rule["span_min"]) != span_min:
             continue
-        if abs(float(rule["span_max"]) - span_max) > eps:
+        if float(rule["span_max"]) != span_max:
             continue
-        if abs(float(rule["z_bottom"]) - bottom_z) > eps:
+        if float(rule["z_bottom"]) != bottom_z:
             continue
-        if abs(float(rule["z_top"]) - top_z) > eps:
+        if float(rule["z_top"]) != top_z:
             continue
         return float(rule["rail_coord"])
 
@@ -279,8 +296,8 @@ def _snap_edge_coord_to_rail_default(
 
 
 def _snap_rule_z_key(value):
-    """Return the z key precision used by shared-rail snap rules."""
-    return round(float(value), 4)
+    """Return the unrounded z value used by shared-rail snap rules."""
+    return float(value)
 
 
 def _iter_snap_rules(snap_rules_by_z):

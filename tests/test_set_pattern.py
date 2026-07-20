@@ -2,12 +2,17 @@ import os
 import sys
 import unittest
 
+import numpy as np
+
 SRC_ROOT = os.path.abspath(
     os.path.join(os.path.dirname(__file__), "..", "src")
 )
 sys.path.insert(0, SRC_ROOT)
 
 from optimal_checkerboard import OptimalMesh25D
+from optimal_checkerboard.algorithms.snap_faces import (
+    snap_faces_to_shared_rails,
+)
 from optimal_checkerboard.data_structure.face import Face
 from optimal_checkerboard.data_structure.geometry import Obj
 from optimal_checkerboard.data_structure.mesh import Mesh
@@ -15,6 +20,60 @@ from optimal_checkerboard.data_structure.metal import Metal
 
 
 class TestSetPattern(unittest.TestCase):
+    def test_unsafe_two_axis_sharing_falls_back_to_exact_rails(self):
+        """Optimization must be abandoned before a coupled corner collapses."""
+        faces = [
+            {"type": "BOX", "dim": [3.5, 2, 4, 5], "bottom_z": 8, "top_z": 10},
+            {"type": "BOX", "dim": [8, 7.5, 9, 8], "bottom_z": 2, "top_z": 3},
+            {"type": "BOX", "dim": [1, 5.5, 2, 6], "bottom_z": 4, "top_z": 6},
+            {"type": "BOX", "dim": [0, 5.5, 3, 7], "bottom_z": 0, "top_z": 3},
+        ]
+        mesher = OptimalMesh25D()
+        mesher._set_pattern(
+            faces,
+            element_size=2.0,
+            ratio=0.6,
+            mesh_domain={"type": "BOX", "dim": [-1, -1, 13, 13]},
+        )
+
+        self.assertIsNotNone(mesher.rail_optimization_fallback)
+        self.assertTrue(mesher._rail_plan_is_exact)
+        mesh = mesher.mesh_checkerboard()
+        baseline = mesh.nodes.copy()
+        for z_value in mesher._rule_event_z_values:
+            self.assertEqual(mesher.apply_snap_rules_at_z(float(z_value)), 0)
+        np.testing.assert_array_equal(mesh.nodes, baseline)
+
+    def test_filler_station_collision_triggers_exact_rail_fallback(self):
+        """A moving rail may not cross a fixed densification grid line."""
+        faces = [
+            {
+                "type": "LINE",
+                "dim": [1.0, 0.0, 1.0, 1.0],
+                "bottom_z": 0.0,
+                "top_z": 0.0,
+            },
+            {
+                "type": "LINE",
+                "dim": [3.0, 0.0, 3.0, 1.0],
+                "bottom_z": 2.0,
+                "top_z": 2.0,
+            },
+        ]
+        mesher = OptimalMesh25D()
+        mesher._set_pattern(
+            faces,
+            element_size=1.0,
+            ratio=2.0,
+            mesh_domain={"type": "BOX", "dim": [0.0, 0.0, 10.0, 1.0]},
+        )
+        self.assertIsNone(mesher.rail_optimization_fallback)
+
+        mesher.mesh_checkerboard()
+
+        self.assertIsNotNone(mesher.rail_optimization_fallback)
+        self.assertEqual(mesher.x_list, [1.0, 3.0])
+
     def test_line_faces_create_rails_and_snap_rules(self):
         """Verify standalone LINE faces enter the shared-rail pipeline."""
         faces = [
@@ -194,6 +253,32 @@ class TestSetPattern(unittest.TestCase):
         self.assertEqual(snap_faces[1]["dim"], [1.25, 20.0, 1.25, 25.0])
         self.assertEqual(faces[0]["dim"], [1, 0, 1, 5])
         self.assertEqual(mesher.faces[1]["dim"], [1.5, 20, 1.5, 25])
+
+    def test_snap_faces_never_matches_a_distinct_nearby_target(self):
+        """Lookup tolerance must not replace one exact pattern coordinate."""
+        face = {
+            "type": "LINE",
+            "dim": [5e-7, 0.0, 5e-7, 1.0],
+            "bottom_z": 0.0,
+            "top_z": 1.0,
+        }
+        rules = {
+            0.0: [
+                {
+                    "axis": "x",
+                    "target_coord": 0.0,
+                    "rail_coord": -1.0,
+                    "span_min": 0.0,
+                    "span_max": 1.0,
+                    "z_bottom": 0.0,
+                    "z_top": 1.0,
+                }
+            ]
+        }
+
+        snapped = snap_faces_to_shared_rails([face], rules, eps=1e-6)
+
+        self.assertEqual(snapped[0]["dim"], face["dim"])
 
     def test_get_snap_faces_keeps_rules_for_distinct_top_z_values(self):
         """Verify rule dedup retains coincident faces with different lifetimes."""

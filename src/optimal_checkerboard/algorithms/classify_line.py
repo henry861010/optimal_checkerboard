@@ -1,7 +1,29 @@
 """Classify axis-aligned pattern lines."""
 
+import math
 
-def _line_components(line, eps=0.01):
+
+def _scale_aware_tolerance(values, requested=None):
+    """Validate inputs and return an exact topology tolerance.
+
+    Input floats are authoritative geometry.  Even a one-ULP difference is a
+    representable non-axis-aligned edge and must not be silently projected
+    onto an axis.  ``requested`` remains accepted for API compatibility, but
+    it cannot loosen topology equality.
+    """
+    values = tuple(float(value) for value in values)
+    if not all(math.isfinite(value) for value in values):
+        raise ValueError("line coordinates and z values must be finite")
+    if requested is None:
+        return 0.0
+
+    requested = float(requested)
+    if not math.isfinite(requested) or requested < 0.0:
+        raise ValueError("eps must be a non-negative finite number")
+    return 0.0
+
+
+def _line_components(line, eps=None):
     """Return x/y endpoints and z range for supported pattern line formats."""
     if (
         len(line) == 3
@@ -11,9 +33,7 @@ def _line_components(line, eps=0.01):
     ):
         z_bottom = float(line[2][0])
         z_top = float(line[2][1])
-        if z_top < z_bottom:
-            raise ValueError("z_range must satisfy z_bottom <= z_top")
-        return (
+        components = (
             float(line[0][0]),
             float(line[0][1]),
             float(line[1][0]),
@@ -21,6 +41,11 @@ def _line_components(line, eps=0.01):
             z_bottom,
             z_top,
         )
+        if not all(math.isfinite(value) for value in components):
+            raise ValueError("line coordinates and z values must be finite")
+        if z_top < z_bottom:
+            raise ValueError("z_range must satisfy z_bottom <= z_top")
+        return components
 
     if len(line) != 2:
         raise ValueError(
@@ -34,29 +59,34 @@ def _line_components(line, eps=0.01):
 
     z1 = float(point1[2])
     z2 = float(point2[2])
-    if abs(z1 - z2) > eps:
-        raise ValueError(
-            f"Z coordinates mismatch in line {line}: z1 and z2 must "
-            "be equal."
-        )
-
-    return (
+    components = (
         float(point1[0]),
         float(point1[1]),
         float(point2[0]),
         float(point2[1]),
         z1,
-        z1,
+        z2,
     )
+    if not all(math.isfinite(value) for value in components):
+        raise ValueError("line coordinates and z values must be finite")
+    z_tol = _scale_aware_tolerance((z1, z2), requested=eps)
+    if abs(z1 - z2) > z_tol:
+        raise ValueError(
+            f"Z coordinates mismatch in line {line}: z1 and z2 must "
+            "be equal."
+        )
+
+    return components[:4] + (z1, z1)
 
 
-def _classify_line(lines, eps=0.01):
+def _classify_line(lines, eps=None):
     """Classify pattern lines into vertical and horizontal line lists.
 
     Args:
         lines: Lines formatted as [[x1,y1,z], [x2,y2,z]] or
             [[x1,y1], [x2,y2], [z_bottom,z_top]].
-        eps: Coordinate tolerance for floating-point comparisons.
+        eps: Retained for API compatibility.  It is validated but cannot
+            reinterpret two distinct floating-point coordinates as equal.
 
     Returns:
         A tuple containing vertical lines and horizontal lines.
@@ -72,8 +102,12 @@ def _classify_line(lines, eps=0.01):
 
         dx = abs(x1 - x2)
         dy = abs(y1 - y2)
-        is_vertical = dx <= eps and dy > eps
-        is_horizontal = dy <= eps and dx > eps
+        xy_tol = _scale_aware_tolerance(
+            (x1, y1, x2, y2),
+            requested=eps,
+        )
+        is_vertical = dx <= xy_tol and dy > xy_tol
+        is_horizontal = dy <= xy_tol and dx > xy_tol
 
         if is_vertical:
             vertical_lines.append(line)

@@ -35,13 +35,13 @@ class TestGetSnapRules(unittest.TestCase):
         mesher._set_pattern(faces, element_size=10, ratio=0.1)
 
         self.assertEqual(
-            mesher.get_snap_rules(2.0000005),
+            mesher.get_snap_rules(2.0000005, eps=1e-6),
             mesher.get_snap_rules(2),
         )
         self.assertEqual(mesher.get_snap_rules(2.01), [])
 
     def test_get_restore_rules_uses_z_tolerance(self):
-        """Verify delayed restore-rule lookup accepts near top-z matches."""
+        """Verify lifecycle-rule lookup accepts near top-z matches."""
         faces = [
             {
                 "type": "LINE",
@@ -55,12 +55,12 @@ class TestGetSnapRules(unittest.TestCase):
         mesher._set_pattern(faces, element_size=10, ratio=0.1)
 
         self.assertEqual(
-            mesher.get_restore_rules(8.0000005),
+            mesher.get_restore_rules(8.0000005, eps=1e-6),
             mesher.get_restore_rules(8),
         )
         self.assertEqual(mesher.get_restore_rules(8.01), [])
 
-    def test_high_precision_z_uses_distinct_rounded_rule_buckets(self):
+    def test_high_precision_z_uses_distinct_exact_rule_buckets(self):
         """Verify raw high-precision events resolve without crossing buckets."""
         faces = [
             {
@@ -101,6 +101,73 @@ class TestGetSnapRules(unittest.TestCase):
             {rule["span_min"] for rule in second_restore_rules},
             {6.0},
         )
+
+    def test_rule_getters_return_detached_copies(self):
+        """Client edits to returned lifecycle metadata cannot alter a plan."""
+        faces = [
+            {
+                "type": "LINE",
+                "dim": [1.0, 0.0, 1.0, 1.0],
+                "bottom_z": 0.0,
+                "top_z": 1.0,
+            },
+            {
+                "type": "LINE",
+                "dim": [1.5, 0.0, 1.5, 1.0],
+                "bottom_z": 2.0,
+                "top_z": 3.0,
+            },
+        ]
+        mesher = OptimalMesh25D()
+        mesher._set_pattern(
+            faces,
+            element_size=1.0,
+            ratio=1.0,
+            mesh_domain={"type": "BOX", "dim": [0.0, 0.0, 3.0, 1.0]},
+        )
+
+        returned_snap = mesher.get_snap_rules(0.0)
+        returned_restore = mesher.get_restore_rules(1.0)
+        returned_snap[0]["target_coord"] = 99.0
+        returned_restore[0]["span_min"] = 99.0
+
+        self.assertEqual(
+            mesher.snap_rules_by_z[0.0][0]["target_coord"],
+            1.0,
+        )
+        self.assertEqual(
+            mesher.restore_rules_by_z[1.0][0]["span_min"],
+            0.0,
+        )
+
+    def test_direct_rule_plan_mutation_is_rejected(self):
+        """Bypassing getters cannot silently change a validated snap plan."""
+        faces = [
+            {
+                "type": "LINE",
+                "dim": [1.0, 0.0, 1.0, 1.0],
+                "bottom_z": 0.0,
+                "top_z": 1.0,
+            },
+            {
+                "type": "LINE",
+                "dim": [1.5, 0.0, 1.5, 1.0],
+                "bottom_z": 2.0,
+                "top_z": 3.0,
+            },
+        ]
+        mesher = OptimalMesh25D()
+        mesher._set_pattern(
+            faces,
+            element_size=1.0,
+            ratio=1.0,
+            mesh_domain={"type": "BOX", "dim": [0.0, 0.0, 3.0, 1.0]},
+        )
+        mesher.mesh_checkerboard()
+        mesher.snap_rules_by_z[0.0][0]["target_coord"] = 99.0
+
+        with self.assertRaisesRegex(RuntimeError, "snap rules changed"):
+            mesher.apply_snap_rules_at_z(0.0)
 
 
 if __name__ == "__main__":

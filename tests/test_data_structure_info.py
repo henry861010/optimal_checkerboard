@@ -9,6 +9,7 @@ sys.path.insert(0, SRC_ROOT)
 
 from optimal_checkerboard.data_structure.face import Face
 from optimal_checkerboard.data_structure.geometry import Obj
+from optimal_checkerboard.data_structure.layer import Layer
 from optimal_checkerboard.data_structure.mesh import Mesh
 from optimal_checkerboard.data_structure.metal import Metal
 
@@ -88,6 +89,54 @@ class TestDataStructureInfo(unittest.TestCase):
             absolute_info["meshs"][0]["face"]["dim"],
             [7, 8, 9, 10],
         )
+
+    def test_obj_thickness_is_recomputed_from_current_layers(self):
+        obj = Obj("BOX", [0, 0, 1, 1])
+        obj.add_layer(2, "A")
+        obj.layers.append(Layer("B", 3))
+        self.assertEqual(obj.thk, 5)
+
+        obj.layers[0].thk = 7
+
+        self.assertEqual(obj.thk, 10)
+        self.assertEqual(obj.copy().thk, 10)
+
+    def test_obj_rejects_invalid_layer_thickness(self):
+        obj = Obj("BOX", [0, 0, 1, 1])
+        for thickness in (0, -1, float("nan"), float("inf")):
+            with self.subTest(thickness=thickness):
+                with self.assertRaisesRegex(ValueError, "thickness"):
+                    obj.add_layer(thickness, "A")
+
+    def test_obj_child_has_single_parent_and_no_duplicates(self):
+        first_parent = Obj("BOX", [0, 0, 1, 1])
+        second_parent = Obj("BOX", [0, 0, 1, 1])
+        child = Obj("BOX", [0, 0, 1, 1])
+        first_parent.add_child(child)
+
+        with self.assertRaisesRegex(ValueError, "parent"):
+            second_parent.add_child(child)
+        with self.assertRaisesRegex(ValueError, "parent"):
+            first_parent.add_child(child)
+
+        self.assertIs(child.parent_obj, first_parent)
+        self.assertEqual(len(first_parent.child_objs), 1)
+        self.assertEqual(len(second_parent.child_objs), 0)
+
+    def test_obj_child_rejects_cycles_without_partial_mutation(self):
+        root = Obj("BOX", [0, 0, 1, 1])
+        child = Obj("BOX", [0, 0, 1, 1])
+        grandchild = Obj("BOX", [0, 0, 1, 1])
+        root.add_child(child)
+        child.add_child(grandchild)
+
+        with self.assertRaisesRegex(ValueError, "cycle"):
+            grandchild.add_child(root)
+        with self.assertRaisesRegex(ValueError, "cycle"):
+            root.add_child(root)
+
+        self.assertIsNone(root.parent_obj)
+        self.assertEqual(grandchild.child_objs, [])
 
 
 if __name__ == "__main__":

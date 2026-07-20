@@ -12,7 +12,7 @@ from optimal_checkerboard.algorithms.classify_line import _classify_line
 
 class TestClassifyLine(unittest.TestCase):
     def setUp(self):
-        """Configure the default classification tolerance."""
+        """Configure a caller tolerance capped by representation noise."""
         self.eps = 0.01
 
     def test_classify_valid_lines(self):
@@ -20,8 +20,8 @@ class TestClassifyLine(unittest.TestCase):
         lines = [
             [[0, 0, 5], [10, 0, 5]],
             [[2, 0, 1], [2, 10, 1]],
-            [[0, 0.005, 3], [10, 0, 3]],
-            [[1.005, 0, 3], [1, 10, 3]],
+            [[0, 0, 3], [10, 0, 3]],
+            [[1, 0, 3], [1, 10, 3]],
         ]
 
         vertical, horizontal = _classify_line(lines, self.eps)
@@ -30,6 +30,41 @@ class TestClassifyLine(unittest.TestCase):
         self.assertEqual(len(horizontal), 2)
         self.assertIn([[2, 0, 1], [2, 10, 1]], vertical)
         self.assertIn([[0, 0, 5], [10, 0, 5]], horizontal)
+
+    def test_explicit_large_eps_does_not_accept_near_diagonal_line(self):
+        """Verify eps cannot change the topology of a non-axis line."""
+        with self.assertRaisesRegex(
+            ValueError,
+            "Must be strictly vertical or horizontal",
+        ):
+            _classify_line(
+                [[[1.005, 0, 3], [1, 10, 3]]],
+                self.eps,
+            )
+
+    def test_scale_aware_tolerance_stays_small_for_large_coordinates(self):
+        """Verify large coordinate magnitude does not hide a real offset."""
+        with self.assertRaisesRegex(
+            ValueError,
+            "Must be strictly vertical or horizontal",
+        ):
+            _classify_line(
+                [[[1e15, 0, 3], [1e15 + 1.0, 10, 3]]],
+            )
+
+    def test_one_ulp_diagonal_is_not_projected_onto_an_axis(self):
+        """Every distinct input float remains authoritative topology."""
+        x_value = 1e16
+        next_x = float.fromhex(x_value.hex()) + 2.0
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "Must be strictly vertical or horizontal",
+        ):
+            _classify_line(
+                [[[x_value, 0.0, 0.0], [next_x, 100.0, 0.0]]],
+                eps=1.0,
+            )
 
     def test_classification_output_is_deterministically_sorted(self):
         """Verify classified lines are sorted by z and fixed coordinate."""
