@@ -60,6 +60,12 @@ number of z subdivisions control the final 3D arrays.
   is discarded before any later snap can make it stale, and selector hit
   arrays are consumed one at a time, so retained work memory is `O(E2)` rather
   than `O(selectors * E2)`.
+- Material layers use two fixed `int32` component buffers.  At each overlay,
+  only the preceding active footprint is inherited; a full-domain footprint
+  uses a contiguous buffer copy.  This work is bounded by emitted slab cells
+  (each inherited active quad produces at least one hexahedron), not by
+  `all_2D_cells * geometry_events`, and it allocates no per-layer mesh-sized
+  component buffer.
 - Every z subdivision is proven representable in float64 before its slab
   changes mappings or allocates output.  Final-sentinel XY synchronization is
   sparse and validates only incident 3D elements.

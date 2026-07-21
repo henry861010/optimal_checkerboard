@@ -187,8 +187,13 @@ for z_value in z_events:
 `OptimalMesh25D.build()` 目前要求一個 explicit `BOX` mesh domain，並依 layer stack：
 
 1. 以目前 Z 重建完整 active snap state。
-2. 將 2D elements 分配給 area/material。
+2. 將本層 areas overlay 到上一層的 2D material state。
 3. 沿 Z 方向拉伸。
+
+同一個 object stack 內，`areas` 是 material patches，不是每一層的完整截面宣告。
+本層沒有命中的 2D elements 會繼承上一個 Z interval 的 material；只有新 area
+命中的 elements 會被覆寫。每個 stack 開始時才重設為空。這讓較晚出現的 child
+pattern 能嵌入既有 main footprint，而不會把 main 的周圍刪掉。
 
 在任何 extrusion 前，`build()` 會對每個 slab 中所有 area outer boundary、
 area holes、metal ranges 與 metal holes 做 exact representability preflight。每條
@@ -237,7 +242,8 @@ density 都會在 mesh mutation 前拒絕，不會靜默退回 area base materia
 Area `holes`、metal `ranges`／`holes` 若提供，必須是 list/tuple；不接受 iterator
 或 generator，以免 preflight 消耗一次後 runtime 得到不同的 geometry。
 `EMPTY` 是 Dragger 保留的 component id 0，不可當成 area、metal target 或
-`material_o` label；要排除區域請用 explicit holes。若 NORMAL selector 的有限
+`material_o` label。Explicit holes 只排除目前 area patch 的覆寫；在後續 layer
+中，hole 內既有的 material 仍會繼承。若 NORMAL selector 的有限
 element areas 加總超出 float64 可表示範圍，build 會 fail closed，不會讓 `inf`
 進入 density threshold 而錯配材料。
 
@@ -283,6 +289,12 @@ obj_list = [
                     "type": "BOX",
                     "dim": [0, 0, 24, 18],
                     "material": "SUBSTRATE",
+                    "holes": [
+                        {
+                            "type": "BOX",
+                            "dim": [15, 3, 22, 9],
+                        }
+                    ],
                 },
                 {
                     "type": "BOX",

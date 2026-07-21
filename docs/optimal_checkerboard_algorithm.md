@@ -982,8 +982,14 @@ classification 使用完全相同的 geometry。
 1. `apply_snap_rules_at_z(z_begin)`。
 2. 若已有上一層 3D top nodes，同步被 snap 的 XY。
 3. 重新計算 2D element areas。
-4. `_organize(areas)` 分配 material/component ids。
+4. `_organize(areas)` 將本層 material patches overlay 到上一個 interval。
 5. `_drag(element_size, z_begin, z_end)` 建立 3D nodes 與 hexahedra。
+
+同一 object stack 的 material state 會跨 interval 保留。第一層從 `EMPTY` 開始；
+後續 layer 只有 area 命中的 elements 被重新分配，沒有命中的 elements 繼承前一層。
+`previous_element_2D_comp` 在一次 organize 中保持為上一層的固定快照，供
+`CONTINUE`／`CONVERT` 判斷；新 current buffer 只複製 previous active footprint，
+不掃描或複製未使用的 2D cells。另一個 object stack 開始時才清空狀態。
 
 所有 intervals 完成後，final sentinel 的 complete active snap state 仍會套用到 2D
 working mesh，並同步到已建立的最終 3D top plane。Sentinel 不產生新
@@ -999,6 +1005,9 @@ interval，但絕對不會被當成可忽略的幾何 state。
 - POLYGON：四點都需位於任一 hull 且不在 holes。
 
 polygon boundary 使用 inclusive test，位於邊界上的 corners 視為 inside。
+
+Area 是目前 layer 的 overlay patch，而不是完整 cross-section。Area hole 代表該
+patch 不覆寫 hole 內 elements；若該處已在上一層 active，其 material 仍會繼承。
 
 搜尋以 bounded chunks 建立單次 element-coordinate work set，不會將整個 2D mesh
 複製為 corner-coordinate array。同一 layer 中的 areas 不得對同一 element 重疊
@@ -1028,7 +1037,7 @@ schema preflight：
 - 每個 area 的 `material` 與每個 metal 的 `material` 必須是 non-empty string。
 - `CONVERT` 的 `material_o` 也必須是 non-empty string。
 - 上述 labels 都不可等於 reserved component `EMPTY`（id `0`）；排除區域必須用
-  explicit holes 表達。
+  explicit holes 表達。Hole 不會清除前一層既有 material，只會排除本次覆寫。
 - metal `type` 是 case-sensitive，只能 exact 等於 `NORMAL`、`CONTINUE` 或
   `CONVERT`。
 - `NORMAL.density` 必須存在、是 numeric、不是 bool、為 finite，且落在

@@ -1084,12 +1084,12 @@ class Dragger:
                     )
 
     def _organize_with_current_index(self, areas, layer=1):
-        """Assign one layer without leaking material outside its areas.
+        """Overlay one layer on the material state of the preceding slab.
 
-        ``previous_element_2D_comp`` is a fixed-size snapshot used only by
-        CONTINUE and CONVERT.  The current layer starts EMPTY, so a footprint
-        that becomes smaller cannot silently extrude material from the layer
-        below.
+        Areas are patches, not a complete replacement cross-section.  Cells
+        outside this layer's areas inherit their preceding material.  The
+        separate ``previous_element_2D_comp`` buffer remains an immutable
+        snapshot while CONTINUE and CONVERT are evaluated.
         """
         if len(self.previous_element_2D_comp) != len(self.element_2D_comp):
             self.previous_element_2D_comp = np.zeros_like(self.element_2D_comp)
@@ -1098,19 +1098,32 @@ class Dragger:
                 dtype=np.int32,
             )
 
-        # Swap fixed-size buffers instead of copying every 2D element at every
-        # z event.  Clear only indices that were active the last time the
-        # reusable buffer represented a layer.
+        # Swap fixed-size buffers, clear only stale non-empty cells in the
+        # reusable buffer, then sparsely inherit the preceding slab.  Copying
+        # the active footprint is output-proportional: every inherited cell
+        # will produce at least one hexahedron in the slab that follows.
+        previous_active = self._element_2D_active_indices
         reusable_active = self._previous_element_2D_active_indices
         self.previous_element_2D_comp, self.element_2D_comp = (
             self.element_2D_comp,
             self.previous_element_2D_comp,
         )
-        self._previous_element_2D_active_indices = self._element_2D_active_indices
+        self._previous_element_2D_active_indices = previous_active
         if len(reusable_active):
             self.element_2D_comp[reusable_active] = self.comps["EMPTY"]
+
+        inherited_full_footprint = (
+            len(previous_active) == len(self.element_2D_comp)
+        )
+        if inherited_full_footprint:
+            self.element_2D_comp[:] = self.previous_element_2D_comp
+        elif len(previous_active):
+            self.element_2D_comp[previous_active] = (
+                self.previous_element_2D_comp[previous_active]
+            )
+
         self._element_2D_active_indices = np.empty(0, dtype=np.int32)
-        active_chunks = []
+        active_chunks = [] if inherited_full_footprint else [previous_active]
         self._area_claim_generation += 1
         if self._area_claim_generation >= np.iinfo(np.uint32).max:
             self._area_claim_stamps.fill(0)
@@ -1132,7 +1145,8 @@ class Dragger:
                     "priority regions with explicit holes"
                 )
             self._area_claim_stamps[area_indices] = claim_generation
-            active_chunks.append(area_indices)
+            if not inherited_full_footprint:
+                active_chunks.append(area_indices)
 
             # Each selector is evaluated exactly once, in its priority pass,
             # and consumed immediately.  Keeping all selector hit arrays would
@@ -1261,7 +1275,9 @@ class Dragger:
                 comp_id = self.comps[material]
                 self.element_2D_comp[area_indices[remaining_indices]] = comp_id
 
-        if active_chunks:
+        if inherited_full_footprint:
+            self._element_2D_active_indices = previous_active
+        elif active_chunks:
             if len(active_chunks) == 1:
                 active_indices = active_chunks[0]
             else:

@@ -12,6 +12,7 @@ import numpy as np
 
 from optimal_checkerboard import OptimalMesh25D
 from optimal_checkerboard.algorithms.drag import Dragger
+from optimal_checkerboard.data_structure.geometry import Obj
 
 
 def _area():
@@ -290,6 +291,104 @@ class TestOptimalMeshBuild(unittest.TestCase):
         self.assertEqual(dragger.node_num, 96)
         self.assertEqual(len(dragger.elements), dragger.element_num)
         self.assertEqual(len(dragger.nodes), dragger.node_num)
+
+    def test_example_children_overlay_main_without_removing_its_top_slab(self):
+        """Regression for script/example_geometry.py's material stack."""
+        main_dim = [0.0, 0.0, 100.0, 100.0]
+        child1_dim = [80.0, 80.0, 90.0, 90.0]
+        child2_dim = [70.0, 67.0, 79.9, 77.0]
+
+        main = Obj(type="BOX", dim=main_dim, z=0.0)
+        main.add_layer(thk=100.0, material="EMPTY")
+        child1 = Obj(type="BOX", dim=child1_dim, z=90.0)
+        child1.add_layer(thk=10.0, material="comp1")
+        child2 = Obj(type="BOX", dim=child2_dim, z=90.0)
+        child2.add_layer(thk=10.0, material="comp2")
+        main.add_child(child1)
+        main.add_child(child2)
+
+        mesher = OptimalMesh25D()
+        mesher.set_pattern_obj(main, element_size=10.0, ratio=0.2)
+        mesher.mesh_checkerboard()
+        dragger = mesher.build([[
+            {
+                "z": 0.0,
+                "element_size": 10.0,
+                "areas": [{
+                    "type": "BOX",
+                    "dim": main_dim,
+                    "material": "COMP1",
+                }],
+            },
+            {
+                "z": 90.0,
+                "element_size": 10.0,
+                "areas": [
+                    {
+                        "type": "BOX",
+                        "dim": child1_dim,
+                        "material": "COMP2",
+                    },
+                    {
+                        "type": "BOX",
+                        "dim": child2_dim,
+                        "material": "COMP3",
+                    },
+                ],
+            },
+            {"z": 100.0},
+        ]], preserve_mesh2d=True)
+
+        elements = dragger.elements[:dragger.element_num]
+        nodes = dragger.nodes[:dragger.node_num]
+        components = dragger.element_comps[:dragger.element_num]
+        hex_z = nodes[elements, 2]
+        top_slab = (
+            np.isclose(hex_z.min(axis=1), 90.0)
+            & np.isclose(hex_z.max(axis=1), 100.0)
+        )
+        self.assertTrue(np.any(top_slab))
+
+        bottom_xy = nodes[elements[top_slab, :4], :2]
+        x = bottom_xy[:, :, 0]
+        y = bottom_xy[:, :, 1]
+        projected_areas = 0.5 * np.abs(
+            np.sum(x * np.roll(y, -1, axis=1), axis=1)
+            - np.sum(y * np.roll(x, -1, axis=1), axis=1)
+        )
+        top_components = components[top_slab]
+
+        expected_areas = {
+            "COMP1": 9801.0,
+            "COMP2": 100.0,
+            "COMP3": 99.0,
+        }
+        for material, expected_area in expected_areas.items():
+            material_area = projected_areas[
+                top_components == dragger.comps[material]
+            ].sum()
+            self.assertAlmostEqual(float(material_area), expected_area)
+        self.assertAlmostEqual(float(projected_areas.sum()), 10000.0)
+
+        lower_slab = (
+            np.isclose(hex_z.min(axis=1), 80.0)
+            & np.isclose(hex_z.max(axis=1), 90.0)
+        )
+        lower_top_node_ids = np.unique(elements[lower_slab, 4:])
+        child_bottom_node_ids = np.unique(
+            elements[
+                top_slab
+                & (components != dragger.comps["COMP1"]),
+                :4,
+            ]
+        )
+        np.testing.assert_array_equal(
+            np.setdiff1d(child_bottom_node_ids, lower_top_node_ids),
+            [],
+        )
+
+        main_hexes = elements[components == dragger.comps["COMP1"]]
+        self.assertEqual(float(nodes[main_hexes, 2].max()), 100.0)
 
     def test_full_domain_capacity_proves_z_planes_before_allocating(self):
         mesher = self._integrity_mesher()

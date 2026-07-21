@@ -560,6 +560,13 @@ layer boundary 的 pattern lifecycle event。對每個位於 stack 起訖 Z 之�
 
 下一筆 entry 的 `z` 是目前 layer 的 `z_end`。
 
+同一個 object stack 具有持續的 2D material state。第一個 layer 從空狀態開始；
+之後每個 layer 的 `areas` 都是 overlay patches：被 area 選到的 elements 依該 area
+重新分配，未被任何 area 選到的 elements 則繼承上一個 interval 的 material。
+因此較小的 child area 可以覆寫 main 的局部，同時 main 的其餘 footprint 會繼續
+拉伸。只有開始另一個 object stack 時才會重設 material state，避免不同 bodies
+互相繼承。
+
 ### 6.3 Final sentinel
 
 ```python
@@ -641,6 +648,9 @@ Area `holes` 若提供，必須是 list/tuple，且每一項都是 selector mapp
 Iterator/generator 會被拒絕；這避免同一份輸入在 geometry preflight 被消耗後，
 runtime classification 看見不同或空的 holes。
 
+Hole 的語意是「這個 area patch 不覆寫該處」。若 hole 內在上一個 interval 已有
+material，該 material 會照常繼承；hole 不會隱式清除既有 footprint。
+
 ### 6.5 Area metals
 
 這裡的 metal dictionaries 屬於 3D material assignment schema，與 `data_structure.Metal` 是不同層次的資料。
@@ -665,8 +675,8 @@ selector mapping；不接受一次性 iterator/generator。
 
 `EMPTY` 是內部保留的 component label（id `0`），代表不產生 element。它不可作為
 area `material`、任何 metal target `material`，也不可作為 `CONVERT.material_o`。
-需要排除 footprint 時請使用 explicit area holes，而不是用 reserved label 隱式
-刪除 elements。
+需要讓 area 不命中某區域時請使用 explicit holes，而不是用 reserved label；但在
+overlay layer 中，hole 只保留該處原有 material，不會刪除已存在的 elements。
 
 #### NORMAL
 

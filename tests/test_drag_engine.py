@@ -247,7 +247,7 @@ class TestDragEngine(unittest.TestCase):
             [core_id, core_id],
         )
 
-    def test_smaller_layer_footprint_does_not_extrude_previous_material(self):
+    def test_smaller_layer_area_overlays_and_inherits_previous_material(self):
         engine = Engin25D()
         engine.set_2D(SimpleMesh2D())
         full_area = {
@@ -258,7 +258,7 @@ class TestDragEngine(unittest.TestCase):
         left_area = {
             "type": "BOX",
             "dim": [0, 0, 1, 1],
-            "material": "CORE",
+            "material": "TOP",
         }
 
         engine._organize(full_area)
@@ -268,17 +268,77 @@ class TestDragEngine(unittest.TestCase):
 
         engine._organize(left_area)
 
+        top_id = engine.comps["TOP"]
         np.testing.assert_array_equal(
             engine.previous_element_2D_comp,
             [core_id, core_id],
         )
-        np.testing.assert_array_equal(engine.element_2D_comp, [core_id, 0])
+        np.testing.assert_array_equal(
+            engine.element_2D_comp,
+            [top_id, core_id],
+        )
         engine._drag(element_size=1, begin=1, end=2)
 
-        self.assertEqual(engine.element_num, 3)
+        self.assertEqual(engine.element_num, 4)
+        np.testing.assert_array_equal(
+            engine.element_comps[2:4],
+            [top_id, core_id],
+        )
         last_hex = engine.elements[engine.element_num - 1]
         last_hex_xy = engine.nodes[last_hex, :2]
-        self.assertLessEqual(float(last_hex_xy[:, 0].max()), 1.0)
+        self.assertGreaterEqual(float(last_hex_xy[:, 0].min()), 1.0)
+        self.assertEqual(float(last_hex_xy[:, 0].max()), 2.0)
+
+    def test_overlay_buffers_inherit_across_empty_layer_and_reset_per_stack(self):
+        engine = Engin25D()
+        engine.set_2D(SimpleMesh2D())
+
+        engine._organize({
+            "type": "BOX",
+            "dim": [0, 0, 1, 1],
+            "material": "LEFT",
+        })
+        engine._organize({
+            "type": "BOX",
+            "dim": [1, 0, 2, 1],
+            "material": "RIGHT",
+        })
+        expected = [engine.comps["LEFT"], engine.comps["RIGHT"]]
+        np.testing.assert_array_equal(engine.element_2D_comp, expected)
+
+        engine._organize([])
+        np.testing.assert_array_equal(engine.previous_element_2D_comp, expected)
+        np.testing.assert_array_equal(engine.element_2D_comp, expected)
+
+        engine._organize({
+            "type": "BOX",
+            "dim": [0, 0, 1, 1],
+            "material": "TOP",
+        })
+        np.testing.assert_array_equal(
+            engine.previous_element_2D_comp,
+            expected,
+        )
+        np.testing.assert_array_equal(
+            engine.element_2D_comp,
+            [engine.comps["TOP"], engine.comps["RIGHT"]],
+        )
+
+        engine._organize_empty()
+        np.testing.assert_array_equal(engine.element_2D_comp, [0, 0])
+        np.testing.assert_array_equal(engine.previous_element_2D_comp, [0, 0])
+        self.assertEqual(len(engine._element_2D_active_indices), 0)
+        self.assertEqual(len(engine._previous_element_2D_active_indices), 0)
+
+        engine._organize({
+            "type": "BOX",
+            "dim": [1, 0, 2, 1],
+            "material": "NEW_STACK",
+        })
+        np.testing.assert_array_equal(
+            engine.element_2D_comp,
+            [0, engine.comps["NEW_STACK"]],
+        )
 
     def test_organize_rejects_overlapping_area_ownership(self):
         engine = Engin25D()
